@@ -1,26 +1,4 @@
-//! Discover and resolve data from the Magic: The Gathering Online deployment.
-//!
-//! Follow the deployment's application-manifest reference to build a catalog of
-//! file and assembly download URLs. Versioned directories are discovered, never
-//! guessed. The default build performs no network requests; the optional `http`
-//! feature adds `Client`. The [`carddata`] module parses CardDataSource components
-//! and resolves lookup references and clone inheritance into complete objects.
-//!
-//! ```
-//! use mtgoxml::{Deployment, LIVE_DEPLOYMENT_URL};
-//!
-//! let deployment = Deployment::from_bytes(
-//!     LIVE_DEPLOYMENT_URL,
-//!     include_bytes!("../fixtures/live/MTGO.application"),
-//! )?;
-//! let application = deployment.with_application_bytes(
-//!     include_bytes!("../fixtures/live/MTGO.exe.manifest"),
-//! )?;
-//! for resource in application.xml_resources() {
-//!     println!("{}: {}", resource.path, resource.url);
-//! }
-//! # Ok::<(), mtgoxml::Error>(())
-//! ```
+#![doc = include_str!("../docs/usage.md")]
 
 mod error;
 mod location;

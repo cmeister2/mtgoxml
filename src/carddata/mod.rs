@@ -1,42 +1,4 @@
-//! Parse and resolve MTGO's versioned `CardDataSource` component files.
-//!
-//! Set documents contain digital objects with literal properties, lookup
-//! references, presence flags, and nested property groups. Lookup documents map
-//! opaque identifiers to text. Parse files discovered through the ClickOnce catalog;
-//! the master document's external XML entities are intentionally unsupported.
-//!
-//! Byte input accepts UTF-8, with or without a BOM. Text retains MTGO's own
-//! formatting after XML decoding. The parsers preserve unknown property names
-//! and do not validate against the incomplete published DTD.
-//! Nested property groups are limited to 64 levels to bound parser recursion.
-//!
-//! ```
-//! use mtgoxml::{Deployment, LIVE_DEPLOYMENT_URL, carddata::CardDataFile};
-//!
-//! let application = Deployment::from_bytes(
-//!     LIVE_DEPLOYMENT_URL, include_bytes!("../../fixtures/live/MTGO.application"),
-//! )?.with_application_bytes(include_bytes!("../../fixtures/live/MTGO.exe.manifest"))?;
-//! let mut database = application.card_database();
-//! database.insert(&application, CardDataFile::parse(r#"
-//!     <CARDNAME_STRING_ITEMS>
-//!       <CARDNAME_STRING_ITEM id="name">Example</CARDNAME_STRING_ITEM>
-//!     </CARDNAME_STRING_ITEMS>"#,
-//! )?)?;
-//! database.insert(&application, CardDataFile::parse(r#"
-//!     <CardSet id="EXAMPLE">
-//!       <DigitalObject DigitalObjectCatalogID="DOC_1">
-//!         <CARDNAME_STRING id="name"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>
-//!       </DigitalObject>
-//!       <DigitalObject DigitalObjectCatalogID="DOC_2">
-//!         <CLONE_ID value="1"/><IS_FOIL/>
-//!       </DigitalObject>
-//!     </CardSet>"#,
-//! )?)?;
-//! let card = database.card(2)?;
-//! assert_eq!(card.name(), Some("Example"));
-//! assert!(card.is_foil()?);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
+#![doc = include_str!("../../docs/card-data.md")]
 
 mod database;
 mod error;
