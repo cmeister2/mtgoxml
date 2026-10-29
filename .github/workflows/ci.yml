@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  evenflow:
+    name: Evenflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: cmeister2/evenflow@89c8b1bc1f330a7ffaeca3df65e42ff2513dd604 # main
+        with:
+          # renovate: datasource=github-releases depName=cmeister2/evenflow
+          version: '0.2.2'
+          strict: 'true'
+
+  rust:
+    name: Rust ${{ matrix.toolchain }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        toolchain: ["1.85.0", stable]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - run: cargo check --locked --all-targets --all-features
+      - run: cargo test --locked --no-default-features
+      - run: cargo test --locked --all-targets --all-features
+      - run: cargo test --locked --doc --all-features
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: Verify declared MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.88.0
+        with:
+          tool: cargo-msrv@0.19.6
+      - run: cargo msrv verify
+
+  coverage:
+    name: Coverage and documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2.88.0
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
+      - run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  release-tools:
+    name: Release tooling regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  release:
+    name: Release
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [evenflow, rust, msrv, coverage, release-tools]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - name: Dry-run release
+        env:
+          RELEASE_BRANCH: ${{ github.head_ref || github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # Evaluate the PR head as a release branch instead of skipping a PR build.
+        run: >-
+          GITHUB_REF="refs/heads/$RELEASE_BRANCH"
+          npx --no-install semantic-release --dry-run --no-ci --branches "$RELEASE_BRANCH"
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: npx --no-install semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  success:
+    name: Success
+    if: always()
+    needs: [evenflow, rust, msrv, coverage, release-tools, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every applicable job to pass
+        env:
+          EVENFLOW_RESULT: ${{ needs.evenflow.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          RELEASE_TOOLS_RESULT: ${{ needs.release-tools.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          RELEASE_EXPECTED: >-
+            ${{ github.event_name == 'push' ||
+                github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          test "$EVENFLOW_RESULT" = success
+          test "$RUST_RESULT" = success
+          test "$MSRV_RESULT" = success
+          test "$COVERAGE_RESULT" = success
+          test "$RELEASE_TOOLS_RESULT" = success
+          if [ "$RELEASE_EXPECTED" = true ]; then
+            test "$RELEASE_RESULT" = success
+          else
+            test "$RELEASE_RESULT" = skipped
+          fi

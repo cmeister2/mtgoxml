@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:v2="urn:schemas-microsoft-com:asm.v2" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" manifestVersion="1.0">
+  <assemblyIdentity name="MTGO.exe" version="1.2.3.4" />
+  <v2:application />
+  <v2:dependency>
+    <v2:dependentOS><v2:osVersionInfo><v2:os majorVersion="6" /></v2:osVersionInfo></v2:dependentOS>
+  </v2:dependency>
+  <v2:dependency>
+    <v2:dependentAssembly dependencyType="preRequisite" codebase="framework.dll">
+      <assemblyIdentity name="Framework" version="4.0.0.0" />
+    </v2:dependentAssembly>
+  </v2:dependency>
+  <v2:dependency>
+    <v2:dependentAssembly dependencyType="install" codebase="bin\Card.dll" size="4294967297" group="core" optional="false">
+      <assemblyIdentity name="Card" version="1.2.3.4" />
+      <v2:hash>
+        <ds:Transforms><ds:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity" /></ds:Transforms>
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+        <ds:DigestValue>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ds:DigestValue>
+      </v2:hash>
+    </v2:dependentAssembly>
+  </v2:dependency>
+  <v2:file name="ExternalData\Cards.xml" size="123" group="data" optional="true">
+    <v2:hash>
+      <ds:Transforms><ds:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity" /></ds:Transforms>
+      <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+      <ds:DigestValue>AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=</ds:DigestValue>
+    </v2:hash>
+  </v2:file>
+  <v2:file name="ExternalData\Card Data #1?100%.xml" />
+  <v2:file name="Images/card.png" size="0" />
+  <v2:file name="ExternalData\already%20encoded.xml" />
+</assembly>

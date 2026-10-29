@@ -1,0 +1,33 @@
+[package]
+name = "mtgoxml"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Discover Magic: The Gathering Online resources from its ClickOnce manifests"
+license = "MIT"
+repository = "https://github.com/cmeister2/mtgoxml"
+readme = "README.md"
+keywords = ["mtgo", "magic", "clickonce", "manifest", "xml"]
+categories = ["games", "web-programming::http-client"]
+include = ["/src/**", "/examples/**", "/tests/**", "/fixtures/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.clippy]
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
+[features]
+default = []
+http = ["dep:ureq"]
+
+[dependencies]
+clickonce = { git = "https://github.com/cmeister2/clickonce", rev = "29c5b22291cafb071a7f0f178568d1cd2e1663d4" }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
+url = "2.5.8"
+
+[[example]]
+name = "resources"
+required-features = ["http"]
