@@ -3,7 +3,7 @@
 #![cfg(feature = "http")]
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -59,6 +59,9 @@ impl Server {
                     }
                     Err(_) => return,
                 };
+                // Windows and BSD can inherit the listener's nonblocking mode;
+                // request parsing needs blocking reads with the timeouts below.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -69,12 +72,20 @@ impl Server {
                 let mut chunk = [0; 1_024];
                 while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
                     match stream.read(&mut chunk) {
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                         Ok(0) | Err(_) => break,
                         Ok(count) => request.extend_from_slice(&chunk[..count]),
                     }
                     if request.len() > 16 * 1_024 {
                         break;
                     }
+                }
+                // A closed, timed-out, or oversized request must never dispatch
+                // a partial target to the handler as though its headers were complete.
+                if request.len() > 16 * 1_024
+                    || !request.windows(4).any(|bytes| bytes == b"\r\n\r\n")
+                {
+                    continue;
                 }
                 let text = String::from_utf8_lossy(&request);
                 let path = text.split_whitespace().nth(1).unwrap_or("");
@@ -130,6 +141,27 @@ fn client(status_as_error: bool) -> Client {
     )
 }
 
+/// A partial request followed by EOF must not be treated as a complete request.
+#[test]
+fn incomplete_request_headers_are_not_dispatched() {
+    let server = Server::new(|_| response("200 OK", "", b"unexpected dispatch"));
+    let mut stream = TcpStream::connect(server.origin.strip_prefix("http://").unwrap()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .write_all(b"GET /partial HTTP/1.1\r\nHost: localhost\r\n")
+        .unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    let mut received = Vec::new();
+    stream.read_to_end(&mut received).unwrap();
+    assert!(
+        received.is_empty(),
+        "incomplete request received a response: {received:?}"
+    );
+    assert!(server.requests().is_empty());
+}
+
 /// Discovery fetches the deployment and application manifests without payloads.
 #[test]
 fn discovery_fetches_exactly_two_manifests() {
@@ -172,7 +204,7 @@ fn discovery_uses_final_urls_after_deployment_and_application_redirects() {
     });
     let application = client(true)
         .discover(&format!("{}/entry", server.origin))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{error:?}; requests: {:?}", server.requests()));
     assert_eq!(
         application.deployment().url().as_str(),
         format!("{}/releases/live/MTGO.application", server.origin)
@@ -508,11 +540,15 @@ fn card_data_payload_identity_mismatches_are_rejected() {
         } else {
             "CardDataSource/client_ONE.xml"
         };
-        assert!(matches!(
-            result,
-            Err(Error::CardData(carddata::Error::InvalidData(message)))
-                if message.contains(expected_path)
-        ));
+        assert!(
+            matches!(
+                &result,
+                Err(Error::CardData(carddata::Error::InvalidData(message)))
+                    if message.contains(expected_path)
+            ),
+            "{result:?}; requests: {:?}",
+            server.requests()
+        );
     }
 }
 
@@ -568,10 +604,14 @@ fn card_data_missing_lookup_and_clone_base_report_required_resources() {
     let server = Server::new(card_response);
     let application = card_application(&server.origin, &["CardDataSource/client_ONE.xml"], false);
     let result = client(true).load_card_sets(&application, ["ONE"]);
-    assert!(matches!(
-        result,
-        Err(Error::MissingCardDataResource(path)) if path == "CardDataSource/CARDNAME_STRING.xml"
-    ));
+    assert!(
+        matches!(
+            &result,
+            Err(Error::MissingCardDataResource(path)) if path == "CardDataSource/CARDNAME_STRING.xml"
+        ),
+        "{result:?}; requests: {:?}",
+        server.requests()
+    );
     assert_eq!(
         server.requests(),
         ["/live/version/CardDataSource/client_ONE.xml"]
