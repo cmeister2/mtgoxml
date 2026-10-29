@@ -12,6 +12,9 @@ large CardDataSource download. The tag is
 informational, so a changed manifest with the same application version still
 produces a snapshot.
 
+The workflow uses `cardinalby/git-get-release-action` to look for a published
+release with that exact tag before downloading the catalog.
+
 Data releases appear alongside crate releases, with distinct tags. They do not
 replace the repository's latest crate release. Each contains:
 
@@ -26,10 +29,10 @@ replace the repository's latest crate release. Each contains:
 The exporter pins the downloaded manifests before fetching components. It checks
 declared resource sizes and supported content digests, parses the components,
 and resolves every object before producing the export. Failed downloads,
-integrity checks, parsing, or resolution prevent publication. Assets are staged
-in a draft release, and the release is published only after every upload is
-complete. An interrupted draft is retried on the next run. Published snapshots
-are retained without replacement.
+integrity checks, parsing, or resolution prevent publication. The workflow uses
+`softprops/action-gh-release` to stage assets in a draft and publish after every
+upload completes. An interrupted draft is retried on the next run. Published
+snapshots are retained without replacement.
 
 ## JSON schema version 1
 
@@ -71,13 +74,14 @@ format can therefore be published without overwriting existing snapshots.
 ## Run the exporter locally
 
 ```sh
-cargo build --locked --release --example export --features snapshot
-target/release/examples/export probe /tmp/mtgo-snapshot
-target/release/examples/export export /tmp/mtgo-snapshot
+cargo build --locked --release --bin mtgoxml-export --features snapshot
+target/release/mtgoxml-export probe /tmp/mtgo-snapshot
+target/release/mtgoxml-export export /tmp/mtgo-snapshot
 gzip -dc /tmp/mtgo-snapshot/card-data.json.gz > /tmp/card-data.json
 ```
 
 The second command downloads manifests; the third explicitly downloads the full
 CardDataSource dataset, which exceeds 100 MiB. Local export does not publish a
-release. The Actions workflow uses the repository's `GITHUB_TOKEN` with
+release. The executable also writes checksums and release notes for the release
+action. The Actions workflow uses the repository's `GITHUB_TOKEN` with
 `contents: write`; no additional secret is needed.

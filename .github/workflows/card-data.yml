@@ -26,19 +26,35 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Build exporter
-        run: cargo build --locked --release --example export --features snapshot
+        run: cargo build --locked --release --bin mtgoxml-export --features snapshot
       - name: Download current manifests
-        run: target/release/examples/export probe snapshot
+        id: manifest
+        run: target/release/mtgoxml-export probe snapshot
       - name: Check for a published snapshot
         id: release
-        run: python3 scripts/publish_snapshot.py check snapshot
+        uses: cardinalby/git-get-release-action@2ab178299eecb253f820dcf2cce11f62be1178f7 # v1
+        with:
+          tag: ${{ steps.manifest.outputs.tag }}
+          draft: 'false'
+          doNotFailIfNotFound: 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Download, validate, and export card data
-        if: steps.release.outputs.needs_export == 'true'
-        run: target/release/examples/export export snapshot
+        if: steps.release.outputs.id == ''
+        run: target/release/mtgoxml-export export snapshot
       - name: Publish completed snapshot
-        if: steps.release.outputs.needs_export == 'true'
-        run: python3 scripts/publish_snapshot.py publish snapshot --target "$GITHUB_SHA"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.release.outputs.id == ''
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          tag_name: ${{ steps.manifest.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: MTGO card data ${{ steps.manifest.outputs.application_version }}
+          body_path: snapshot/release-notes.md
+          make_latest: 'false'
+          fail_on_unmatched_files: true
+          files: |
+            snapshot/card-data.json.gz
+            snapshot/snapshot.json
+            snapshot/MTGO.application
+            snapshot/MTGO.exe.manifest
+            snapshot/SHA256SUMS

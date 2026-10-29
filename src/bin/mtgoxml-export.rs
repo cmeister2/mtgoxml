@@ -1,8 +1,8 @@
-//! Capture a manifest snapshot, then export its verified, resolved catalog as JSON.
+//! Capture a manifest snapshot and produce its verified JSON release assets.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +22,13 @@ use ureq::ResponseExt;
 const SCHEMA_VERSION: u32 = 1;
 /// Bound for a raw manifest or card-data component before parsing.
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Assets hashed in the published checksum file, in their stable listing order.
+const CHECKSUM_ASSETS: [&str; 4] = [
+    "card-data.json.gz",
+    "snapshot.json",
+    "MTGO.application",
+    "MTGO.exe.manifest",
+];
 /// Errors from networking, parsing, verification, serialization, or file writes.
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -60,7 +67,9 @@ fn main() -> Result<()> {
     let directory = PathBuf::from(arguments.next().ok_or("expected output directory")?);
     let source = arguments.next();
     if arguments.next().is_some() {
-        return Err("usage: export probe DIR [DEPLOYMENT_URL] | export export DIR".into());
+        return Err(
+            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR".into(),
+        );
     }
     match command.as_str() {
         "probe" => probe(&directory, source.as_deref().unwrap_or(LIVE_DEPLOYMENT_URL)),
@@ -87,16 +96,22 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
     fs::write(directory.join("MTGO.application"), deployment_bytes)?;
     fs::write(directory.join("MTGO.exe.manifest"), application_bytes)?;
     save_metadata(directory, &snapshot)?;
+    if let Some(output) = std::env::var_os("GITHUB_OUTPUT") {
+        append_action_outputs(Path::new(&output), &snapshot)?;
+    }
     println!("{}", snapshot.tag);
     Ok(())
 }
 
 /// Download the pinned components and publish the local gzip only after full validation.
 fn export(directory: &Path) -> Result<()> {
-    match fs::remove_file(directory.join("card-data.json.gz")) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    for name in ["card-data.json.gz", "SHA256SUMS", "release-notes.md"] {
+        // Clear all completed outputs so a failed retry cannot retain stale release files.
+        match fs::remove_file(directory.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     let (mut snapshot, application) = load_snapshot(directory)?;
     snapshot.object_count = None;
@@ -110,6 +125,7 @@ fn export(directory: &Path) -> Result<()> {
     fs::rename(temporary, directory.join("card-data.json.gz"))?;
     snapshot.object_count = Some(database.len());
     save_metadata(directory, &snapshot)?;
+    write_release_files(directory, &snapshot)?;
     println!("Exported {} objects", database.len());
     Ok(())
 }
@@ -353,6 +369,73 @@ fn save_metadata(directory: &Path, snapshot: &Snapshot) -> Result<()> {
     Ok(())
 }
 
+/// Append derived single-line manifest outputs for subsequent GitHub Actions steps.
+fn append_action_outputs(path: &Path, snapshot: &Snapshot) -> Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "tag={}", snapshot.tag)?;
+    writeln!(
+        file,
+        "application_version={}",
+        snapshot.source.application_version
+    )?;
+    Ok(())
+}
+
+/// Stream a file into SHA-256 without retaining the compressed catalog in memory.
+fn digest_file(path: &Path) -> Result<String> {
+    let mut digest = Sha256::new();
+    let mut file = File::open(path)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        // Feed each bounded read into the digest until the file reaches EOF.
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let mut hex = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(hex, "{byte:02x}")?;
+    }
+    Ok(hex)
+}
+
+/// Generate publication metadata only after all four complete export assets exist.
+fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
+    let count = snapshot
+        .object_count
+        .filter(|count| *count > 0)
+        .ok_or("cannot generate release files before a nonempty export completes")?;
+    let mut checksums = String::new();
+    for name in CHECKSUM_ASSETS {
+        // Reject missing or empty assets before installing either release metadata file.
+        let path = directory.join(name);
+        if !path.is_file() || path.metadata()?.len() == 0 {
+            return Err(format!("export asset {name} is missing or empty").into());
+        }
+        writeln!(checksums, "{}  {name}", digest_file(&path)?)?;
+    }
+    let notes = format!(
+        "Resolved MTGO catalog: {count} objects; JSON schema {SCHEMA_VERSION}.\n\n\
+         Application manifest: {}\n\n\
+         Manifest SHA-256: `{}`\n\n\
+         Includes compressed JSON, source manifests, metadata, and SHA256SUMS.\n",
+        snapshot.source.application_manifest_url, snapshot.source.application_manifest_sha256,
+    );
+    fs::write(directory.join("SHA256SUMS.tmp"), checksums)?;
+    fs::write(directory.join("release-notes.md.tmp"), notes)?;
+    fs::rename(
+        directory.join("SHA256SUMS.tmp"),
+        directory.join("SHA256SUMS"),
+    )?;
+    fs::rename(
+        directory.join("release-notes.md.tmp"),
+        directory.join("release-notes.md"),
+    )?;
+    Ok(())
+}
+
 /// Export regressions use captured manifests and small synthetic card-data records.
 #[cfg(test)]
 mod tests {
@@ -384,8 +467,8 @@ mod tests {
             )),
         };
         fs::create_dir_all(&capture.path).unwrap();
-        let deployment_bytes = include_bytes!("../fixtures/live/MTGO.application");
-        let application_bytes = include_bytes!("../fixtures/live/MTGO.exe.manifest");
+        let deployment_bytes = include_bytes!("../../fixtures/live/MTGO.application");
+        let application_bytes = include_bytes!("../../fixtures/live/MTGO.exe.manifest");
         fs::write(capture.path.join("MTGO.application"), deployment_bytes).unwrap();
         fs::write(capture.path.join("MTGO.exe.manifest"), application_bytes).unwrap();
         let application = Deployment::from_bytes(LIVE_DEPLOYMENT_URL, deployment_bytes)
@@ -522,5 +605,68 @@ mod tests {
     #[test]
     fn rejects_oversized_input() {
         assert!(read_bounded(std::io::repeat(0).take(MAX_INPUT_BYTES as u64 + 1)).is_err());
+    }
+
+    /// Action outputs preserve prior entries and expose the exact derived tag and version.
+    #[test]
+    fn action_outputs_append_without_changing_existing_entries() {
+        let capture = capture();
+        let (metadata, _) = load_snapshot(&capture.path).unwrap();
+        let path = capture.path.join("action-output");
+        fs::write(&path, "prior=preserved\n").unwrap();
+        append_action_outputs(&path, &metadata).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "prior=preserved\ntag=mtgo-data-v1-32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f\napplication_version=3.4.159.4708\n"
+        );
+    }
+
+    /// Release notes and checksums remain absent until a complete, nonempty export exists.
+    #[test]
+    fn release_files_require_completed_export() {
+        let capture = capture();
+        let (mut metadata, _) = load_snapshot(&capture.path).unwrap();
+        assert!(write_release_files(&capture.path, &metadata).is_err());
+        metadata.object_count = Some(1);
+        assert!(write_release_files(&capture.path, &metadata).is_err());
+        assert!(!capture.path.join("SHA256SUMS").exists());
+        assert!(!capture.path.join("release-notes.md").exists());
+        fs::write(capture.path.join("card-data.json.gz"), []).unwrap();
+        assert!(write_release_files(&capture.path, &metadata).is_err());
+        assert!(!capture.path.join("SHA256SUMS").exists());
+        assert!(!capture.path.join("release-notes.md").exists());
+    }
+
+    /// Checksums cover all published source and data assets, including completed metadata.
+    #[test]
+    fn release_files_record_asset_digests_and_exported_count() {
+        let capture = capture();
+        let (mut metadata, _) = load_snapshot(&capture.path).unwrap();
+        metadata.object_count = Some(156735);
+        save_metadata(&capture.path, &metadata).unwrap();
+        fs::write(capture.path.join("card-data.json.gz"), b"abc").unwrap();
+        write_release_files(&capture.path, &metadata).unwrap();
+        let checksums = fs::read_to_string(capture.path.join("SHA256SUMS")).unwrap();
+        let lines: Vec<_> = checksums.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(
+            lines[0],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  card-data.json.gz"
+        );
+        assert!(lines[1].ends_with("  snapshot.json"));
+        assert_eq!(
+            lines[2],
+            "1e88dd53cbf6357c1a89623e961386b7a03bf7f531c3615fa1568a574df8cbc2  MTGO.application"
+        );
+        assert_eq!(
+            lines[3],
+            "32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f  MTGO.exe.manifest"
+        );
+        let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
+        assert!(notes.contains("156735 objects; JSON schema 1"));
+        assert!(notes.contains(&metadata.source.application_manifest_url));
+        assert!(notes.contains(&metadata.source.application_manifest_sha256));
+        assert!(!capture.path.join("SHA256SUMS.tmp").exists());
+        assert!(!capture.path.join("release-notes.md.tmp").exists());
     }
 }

@@ -46,6 +46,6 @@ required-features = ["http"]
 name = "card"
 required-features = ["http"]
 
-[[example]]
-name = "export"
+[[bin]]
+name = "mtgoxml-export"
 required-features = ["snapshot"]
