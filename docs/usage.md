@@ -109,6 +109,6 @@ The `resources` example accepts a deployment URL as its first argument. The `car
 example accepts an object ID and set code.
 
 The optional `snapshot` feature enables the `mtgoxml-export` executable, which
-downloads verified components and writes compressed JSON. See the repository's
+downloads verified components and writes compressed JSON Lines. See the repository's
 [data-release guide](https://github.com/cmeister2/mtgoxml/blob/main/docs/data-releases.md)
 for its schema and scheduled publication workflow.

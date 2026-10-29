@@ -53,7 +53,7 @@ jobs:
           make_latest: 'false'
           fail_on_unmatched_files: true
           files: |
-            snapshot/card-data.json.gz
+            snapshot/card-data.jsonl.gz
             snapshot/snapshot.json
             snapshot/MTGO.application
             snapshot/MTGO.exe.manifest

@@ -1,4 +1,4 @@
-//! Capture a manifest snapshot and produce its verified JSON release assets.
+//! Capture a manifest snapshot and produce its verified JSON Lines release assets.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -19,12 +19,12 @@ use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
 /// Version of the published JSON representation.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 /// Bound for a raw manifest or card-data component before parsing.
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Assets hashed in the published checksum file, in their stable listing order.
 const CHECKSUM_ASSETS: [&str; 4] = [
-    "card-data.json.gz",
+    "card-data.jsonl.gz",
     "snapshot.json",
     "MTGO.application",
     "MTGO.exe.manifest",
@@ -105,7 +105,7 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
 
 /// Download the pinned components and publish the local gzip only after full validation.
 fn export(directory: &Path) -> Result<()> {
-    for name in ["card-data.json.gz", "SHA256SUMS", "release-notes.md"] {
+    for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"] {
         // Clear all completed outputs so a failed retry cannot retain stale release files.
         match fs::remove_file(directory.join(name)) {
             Ok(()) => {}
@@ -120,9 +120,9 @@ fn export(directory: &Path) -> Result<()> {
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
 
     // An interrupted export leaves only a temporary gzip, never a completed asset.
-    let temporary = directory.join("card-data.json.gz.tmp");
-    write_database(File::create(&temporary)?, &snapshot.source, &database)?;
-    fs::rename(temporary, directory.join("card-data.json.gz"))?;
+    let temporary = directory.join("card-data.jsonl.gz.tmp");
+    write_database(File::create(&temporary)?, &database)?;
+    fs::rename(temporary, directory.join("card-data.jsonl.gz"))?;
     snapshot.object_count = Some(database.len());
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
@@ -316,21 +316,15 @@ fn load_database(
     Ok(database)
 }
 
-/// Stream sorted objects to a deterministic gzip without retaining a second catalog.
-fn write_database(writer: impl Write, source: &Source, database: &CardDatabase) -> Result<()> {
+/// Stream one compact JSON object per LF-terminated line into a deterministic gzip.
+fn write_database(writer: impl Write, database: &CardDatabase) -> Result<()> {
     let mut gzip = GzBuilder::new()
         .mtime(0)
         .operating_system(255)
         .write(writer, Compression::new(6));
-    write!(gzip, "{{\"schema_version\":{SCHEMA_VERSION},\"source\":")?;
-    serde_json::to_writer(&mut gzip, source)?;
-    write!(gzip, ",\"objects\":[")?;
-    for (index, object) in database.objects().enumerate() {
+    for object in database.objects() {
         // Resolve and serialize one object at a time in stable numeric ID order.
         let object = object?;
-        if index != 0 {
-            write!(gzip, ",")?;
-        }
         serde_json::to_writer(
             &mut gzip,
             &json!({
@@ -339,8 +333,8 @@ fn write_database(writer: impl Write, source: &Source, database: &CardDatabase) 
                 "fields": fields_json(object.fields()),
             }),
         )?;
+        writeln!(gzip)?;
     }
-    writeln!(gzip, "]}}")?;
     gzip.finish()?.flush()?;
     Ok(())
 }
@@ -418,10 +412,10 @@ fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
         writeln!(checksums, "{}  {name}", digest_file(&path)?)?;
     }
     let notes = format!(
-        "Resolved MTGO catalog: {count} objects; JSON schema {SCHEMA_VERSION}.\n\n\
+        "Resolved MTGO catalog: {count} objects; JSON Lines schema {SCHEMA_VERSION}.\n\n\
          Application manifest: {}\n\n\
          Manifest SHA-256: `{}`\n\n\
-         Includes compressed JSON, source manifests, metadata, and SHA256SUMS.\n",
+         Includes compressed JSON Lines, source manifests, metadata, and SHA256SUMS.\n",
         snapshot.source.application_manifest_url, snapshot.source.application_manifest_sha256,
     );
     fs::write(directory.join("SHA256SUMS.tmp"), checksums)?;
@@ -553,17 +547,17 @@ mod tests {
         assert!(verify_bytes("test", b"abc", None, &[transformed]).is_err());
     }
 
-    /// Gzip output is reproducible and retains resolved clones, empty text, flags, and groups.
+    /// Each independent JSON line preserves resolved fields and escaped text reproducibly.
     #[test]
-    fn resolved_json_preserves_property_forms_and_all_object_types() {
+    fn resolved_json_lines_preserve_property_forms_and_all_object_types() {
         let capture = capture();
-        let (metadata, application) = load_snapshot(&capture.path).unwrap();
+        let (_, application) = load_snapshot(&capture.path).unwrap();
         let mut database = application.card_database();
         database
             .insert(
                 &application,
                 CardDataFile::parse(
-                    r#"<NAME_ITEMS><NAME_ITEM id="N">Name</NAME_ITEM></NAME_ITEMS>"#,
+                    r#"<NAME_ITEMS><NAME_ITEM id="N">Name&#10;line&#13;&quot;quoted&quot; café 🧙</NAME_ITEM></NAME_ITEMS>"#,
                 )
                 .unwrap(),
             )
@@ -575,17 +569,23 @@ mod tests {
         database.validate().unwrap();
         let mut first = Vec::new();
         let mut second = Vec::new();
-        write_database(&mut first, &metadata.source, &database).unwrap();
-        write_database(&mut second, &metadata.source, &database).unwrap();
+        write_database(&mut first, &database).unwrap();
+        write_database(&mut second, &database).unwrap();
         assert_eq!(first, second);
-        let decoded: Value =
-            serde_json::from_reader(flate2::read::GzDecoder::new(first.as_slice())).unwrap();
-        assert_eq!(decoded["schema_version"], 1);
-        assert_eq!(
-            decoded["source"]["application_manifest_sha256"],
-            metadata.source.application_manifest_sha256
-        );
-        let objects = decoded["objects"].as_array().unwrap();
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(first.as_slice())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert!(!decoded.starts_with('\u{feff}'));
+        assert!(decoded.ends_with('\n'));
+        assert!(!decoded.contains('\r'));
+        let lines: Vec<_> = decoded.split_terminator('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|line| !line.is_empty()));
+        let objects: Vec<Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert_eq!(objects.len(), 2);
         assert_eq!(objects[0]["id"], 1);
         assert_eq!(objects[1]["id"], 2);
@@ -593,7 +593,12 @@ mod tests {
             objects[1]["set"],
             json!({"id":"TEST", "age":7,"kind":"future"})
         );
-        assert_eq!(objects[1]["fields"]["NAME"], "Name");
+        assert_eq!(
+            objects[1]["fields"]["NAME"],
+            "Name\nline\r\"quoted\" café 🧙"
+        );
+        assert!(objects[0].get("source").is_none());
+        assert!(objects[0].get("schema_version").is_none());
         assert_eq!(objects[1]["fields"]["IS_FOIL"], true);
         assert_eq!(objects[1]["fields"]["EMPTY"], "");
         assert_eq!(
@@ -636,7 +641,7 @@ mod tests {
         assert!(write_release_files(&capture.path, &metadata).is_err());
         assert!(!capture.path.join("SHA256SUMS").exists());
         assert!(!capture.path.join("release-notes.md").exists());
-        fs::write(capture.path.join("card-data.json.gz"), []).unwrap();
+        fs::write(capture.path.join("card-data.jsonl.gz"), []).unwrap();
         assert!(write_release_files(&capture.path, &metadata).is_err());
         assert!(!capture.path.join("SHA256SUMS").exists());
         assert!(!capture.path.join("release-notes.md").exists());
@@ -649,14 +654,14 @@ mod tests {
         let (mut metadata, _) = load_snapshot(&capture.path).unwrap();
         metadata.object_count = Some(156735);
         save_metadata(&capture.path, &metadata).unwrap();
-        fs::write(capture.path.join("card-data.json.gz"), b"abc").unwrap();
+        fs::write(capture.path.join("card-data.jsonl.gz"), b"abc").unwrap();
         write_release_files(&capture.path, &metadata).unwrap();
         let checksums = fs::read_to_string(capture.path.join("SHA256SUMS")).unwrap();
         let lines: Vec<_> = checksums.lines().collect();
         assert_eq!(lines.len(), 4);
         assert_eq!(
             lines[0],
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  card-data.json.gz"
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  card-data.jsonl.gz"
         );
         assert!(lines[1].ends_with("  snapshot.json"));
         assert_eq!(
@@ -668,7 +673,7 @@ mod tests {
             "32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f  MTGO.exe.manifest"
         );
         let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
-        assert!(notes.contains("156735 objects; JSON schema 1"));
+        assert!(notes.contains("156735 objects; JSON Lines schema 2"));
         assert!(notes.contains(&metadata.source.application_manifest_url));
         assert!(notes.contains(&metadata.source.application_manifest_sha256));
         assert!(!capture.path.join("SHA256SUMS.tmp").exists());
