@@ -27,7 +27,7 @@ default = []
 http = ["dep:ureq"]
 
 [dependencies]
-clickonce = { git = "https://github.com/cmeister2/clickonce", rev = "29c5b22291cafb071a7f0f178568d1cd2e1663d4" }
+clickonce = "0.1.0"
 roxmltree = "0.21.2"
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
 url = "2.5.8"

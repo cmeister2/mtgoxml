@@ -32,8 +32,9 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "clickonce"
-version = "0.0.0"
-source = "git+https://github.com/cmeister2/clickonce?rev=29c5b22291cafb071a7f0f178568d1cd2e1663d4#29c5b22291cafb071a7f0f178568d1cd2e1663d4"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "387f4ae35a27ec4e470878066a10f413aab5b650a34d064ece43e049e48b7f73"
 dependencies = [
  "base64",
  "roxmltree",

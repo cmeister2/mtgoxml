@@ -41,9 +41,8 @@ local server. Third-party fixture rights remain with their original owners.
 
 ## Releases
 
-The current `clickonce` dependency is pinned to its new Git API. Before publishing
-to crates.io, release that parser and replace the Git dependency with its registry
-version. The older published `clickonce` 0.0.3 has a different API.
+The crate uses the published `clickonce` 0.1 parser. Configure the repository's
+`CARGO_REGISTRY_TOKEN` secret before enabling registry publication.
 
 Release tooling requires Node **24.15 or newer**. Run `npm ci && npm test` after
 changing it. The regression checks release-note generation and the Cargo
@@ -54,6 +53,4 @@ versions. Tags use plain SemVer. The initial `0.0.0` tag is a history baseline,
 so the first `feat:` after it selects `0.1.0`. Include that tag when pushing the
 branch.
 
-Pull requests dry-run release analysis. Publishing runs only on pushes to `main`
-and requires the repository's `CARGO_REGISTRY_TOKEN` secret after the dependency
-is ready for registry publication.
+Pull requests dry-run release analysis. Publishing runs only on pushes to `main`.
