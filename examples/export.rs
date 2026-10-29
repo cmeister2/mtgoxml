@@ -1,6 +1,7 @@
 //! Capture a manifest snapshot, then export its verified, resolved catalog as JSON.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -178,10 +179,10 @@ fn load_snapshot(directory: &Path) -> Result<(Snapshot, Application)> {
 
 /// Compute manifest identity without depending on decoded XML or assembly version alone.
 fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
-    let hash: String = Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let mut hash = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(hash, "{byte:02x}")?;
+    }
     Ok(Snapshot {
         schema_version: SCHEMA_VERSION,
         source: Source {
