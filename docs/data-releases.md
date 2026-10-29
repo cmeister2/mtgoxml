@@ -5,12 +5,11 @@ hours, at 00:17, 06:17, 12:17, and 18:17 UTC. It can also be started from the
 Actions tab on `main`. GitHub schedules can be delayed; public repositories must
 have activity within 60 days for their schedules to remain enabled.
 
-Each check downloads the deployment and application manifests. A new application
-manifest SHA-256 produces a new data release. An unchanged manifest skips the
-large CardDataSource download. The tag is
-`mtgo-data-v1-<application-version>-<application-manifest-sha256>`. The version
-matches the release title and tracks upstream MTGO releases. The hash preserves
-distinct snapshots when a manifest changes without an application-version bump.
+Each check downloads the deployment and application manifests. Each application
+version has one data release, tagged `mtgo-data-<application-version>`, for example
+`mtgo-data-3.4.159.4708`. If that version already has a published release, the
+workflow skips the large CardDataSource download. Manifest hashes are retained
+in the export metadata and checksums for provenance and integrity verification.
 
 The workflow uses `cardinalby/git-get-release-action` to look for a published
 release with that exact tag before downloading the catalog.
@@ -68,8 +67,8 @@ nested property groups. Unknown fields are retained. Empty strings remain
 strings. The `set` metadata describes the object's source set fragment; resolved
 properties such as `CARDSETNAME_STRING` remain in `fields`.
 
-The schema version also appears in the tag prefix. A future incompatible export
-format can therefore be published without overwriting existing snapshots.
+The schema version is recorded in the JSON and snapshot metadata; release tags
+track the upstream MTGO application version.
 
 ## Run the exporter locally
 

@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
-/// Version of the published JSON representation and its release-tag namespace.
+/// Version of the published JSON representation.
 const SCHEMA_VERSION: u32 = 1;
 /// Bound for a raw manifest or card-data component before parsing.
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -48,7 +48,7 @@ struct Source {
 /// Saved input to the export and release phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
-    /// Output schema version, also included in the deterministic release tag.
+    /// Output schema version recorded in the export metadata.
     schema_version: u32,
     /// Source fields are flat so release automation can inspect them directly.
     #[serde(flatten)]
@@ -193,7 +193,7 @@ fn load_snapshot(directory: &Path) -> Result<(Snapshot, Application)> {
     Ok((saved, application))
 }
 
-/// Combine the upstream version with a digest of the original manifest bytes.
+/// Record manifest provenance and derive the release tag from the upstream version.
 fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
     let mut hash = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
@@ -211,7 +211,7 @@ fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
             application_version: version.clone(),
             application_manifest_sha256: hash.clone(),
         },
-        tag: format!("mtgo-data-v{SCHEMA_VERSION}-{version}-{hash}"),
+        tag: format!("mtgo-data-{version}"),
         object_count: None,
     })
 }
@@ -484,9 +484,9 @@ mod tests {
         capture
     }
 
-    /// The release identity hashes raw bytes even when the assembly version stays unchanged.
+    /// Tags follow the upstream version while provenance retains raw manifest changes.
     #[test]
-    fn raw_manifest_digest_defines_snapshot_identity() {
+    fn release_tags_follow_the_application_version() {
         let capture = capture();
         let (original, application) = load_snapshot(&capture.path).unwrap();
         assert_eq!(
@@ -498,8 +498,12 @@ mod tests {
             changed.source.application_version,
             original.source.application_version
         );
-        assert_ne!(changed.tag, original.tag);
-        assert!(original.tag.starts_with("mtgo-data-v1-3.4.159.4708-"));
+        assert_eq!(changed.tag, original.tag);
+        assert_ne!(
+            changed.source.application_manifest_sha256,
+            original.source.application_manifest_sha256
+        );
+        assert_eq!(original.tag, "mtgo-data-3.4.159.4708");
         assert!(original.object_count.is_none());
     }
 
@@ -618,7 +622,7 @@ mod tests {
         append_action_outputs(&path, &metadata).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "prior=preserved\ntag=mtgo-data-v1-3.4.159.4708-32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f\napplication_version=3.4.159.4708\n"
+            "prior=preserved\ntag=mtgo-data-3.4.159.4708\napplication_version=3.4.159.4708\n"
         );
     }
 
