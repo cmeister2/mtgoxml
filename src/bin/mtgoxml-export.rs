@@ -193,24 +193,25 @@ fn load_snapshot(directory: &Path) -> Result<(Snapshot, Application)> {
     Ok((saved, application))
 }
 
-/// Compute manifest identity without depending on decoded XML or assembly version alone.
+/// Combine the upstream version with a digest of the original manifest bytes.
 fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
     let mut hash = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
         write!(hash, "{byte:02x}")?;
     }
+    let version = application
+        .version()
+        .ok_or("application has no version")?
+        .to_string();
     Ok(Snapshot {
         schema_version: SCHEMA_VERSION,
         source: Source {
             deployment_url: application.deployment().url().to_string(),
             application_manifest_url: application.url().to_string(),
-            application_version: application
-                .version()
-                .ok_or("application has no version")?
-                .to_string(),
+            application_version: version.clone(),
             application_manifest_sha256: hash.clone(),
         },
-        tag: format!("mtgo-data-v{SCHEMA_VERSION}-{hash}"),
+        tag: format!("mtgo-data-v{SCHEMA_VERSION}-{version}-{hash}"),
         object_count: None,
     })
 }
@@ -498,7 +499,7 @@ mod tests {
             original.source.application_version
         );
         assert_ne!(changed.tag, original.tag);
-        assert!(original.tag.starts_with("mtgo-data-v1-"));
+        assert!(original.tag.starts_with("mtgo-data-v1-3.4.159.4708-"));
         assert!(original.object_count.is_none());
     }
 
@@ -617,7 +618,7 @@ mod tests {
         append_action_outputs(&path, &metadata).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "prior=preserved\ntag=mtgo-data-v1-32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f\napplication_version=3.4.159.4708\n"
+            "prior=preserved\ntag=mtgo-data-v1-3.4.159.4708-32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f\napplication_version=3.4.159.4708\n"
         );
     }
 

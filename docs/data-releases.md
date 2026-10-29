@@ -8,9 +8,9 @@ have activity within 60 days for their schedules to remain enabled.
 Each check downloads the deployment and application manifests. A new application
 manifest SHA-256 produces a new data release. An unchanged manifest skips the
 large CardDataSource download. The tag is
-`mtgo-data-v1-<application-manifest-sha256>`; the version in the release title is
-informational, so a changed manifest with the same application version still
-produces a snapshot.
+`mtgo-data-v1-<application-version>-<application-manifest-sha256>`. The version
+matches the release title and tracks upstream MTGO releases. The hash preserves
+distinct snapshots when a manifest changes without an application-version bump.
 
 The workflow uses `cardinalby/git-get-release-action` to look for a published
 release with that exact tag before downloading the catalog.
