@@ -7,8 +7,8 @@ use clickonce::{Manifest, ParseOptions};
 use ureq::ResponseExt;
 
 use crate::{
-    Application, Deployment, Error, LIVE_DEPLOYMENT_URL, Resource, ResourceKind, Url, carddata,
-    location,
+    Application, ArtworkResolver, Deployment, Error, LIVE_DEPLOYMENT_URL, Resource, ResourceKind,
+    Url, carddata, location,
 };
 use carddata::{CardDataFile, CardDatabase, FieldValue};
 
@@ -64,6 +64,38 @@ impl Client {
     pub fn with_card_data_options(mut self, options: carddata::ParseOptions) -> Self {
         self.card_data_options = options;
         self
+    }
+
+    /// Load the application's `MTGO.exe.config` artwork download configuration.
+    ///
+    /// Reads at most 16 MiB and resolves relative artwork roots against the
+    /// configuration response's final URL. This downloads configuration only;
+    /// artwork URLs are constructed without downloading or checking images.
+    /// Declared resource hashes are retained by the catalog but not verified by
+    /// this client, consistently with card-data loading.
+    ///
+    /// # Errors
+    /// Returns an error for a missing configuration resource, invalid network
+    /// location, request or status failure, exceeded response limit, or invalid
+    /// artwork configuration.
+    pub fn load_artwork(&self, application: &Application) -> Result<ArtworkResolver, Error> {
+        let resource = application
+            .resource("MTGO.exe.config")
+            .filter(|resource| resource.kind == ResourceKind::File)
+            .ok_or_else(|| Error::MissingResource("MTGO.exe.config".into()))?;
+        location::check_url(&resource.url)?;
+        let mut response = self.agent.get(resource.url.as_str()).call()?;
+        if !response.status().is_success() {
+            return Err(ureq::Error::StatusCode(response.status().as_u16()).into());
+        }
+        let url = Url::parse(&response.get_uri().to_string())?;
+        location::check_url(&url)?;
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(crate::artwork::MAX_CONFIG_BYTES as u64)
+            .read_to_vec()?;
+        ArtworkResolver::from_config(url, &bytes).map_err(Error::from)
     }
 
     /// Load and validate every CardDataSource component in this application.

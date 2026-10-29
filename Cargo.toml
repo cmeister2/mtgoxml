@@ -25,7 +25,8 @@ missing_panics_doc = "deny"
 [features]
 default = []
 http = ["dep:ureq"]
-snapshot = ["http", "dep:serde", "dep:serde_json", "dep:sha2", "dep:sha1", "dep:flate2"]
+serde = ["dep:serde"]
+snapshot = ["http", "serde", "dep:serde_json", "dep:sha2", "dep:sha1", "dep:flate2"]
 
 [dependencies]
 clickonce = "0.1.0"
@@ -49,3 +50,6 @@ required-features = ["http"]
 [[bin]]
 name = "mtgoxml-export"
 required-features = ["snapshot"]
+
+[dev-dependencies]
+serde_json = "1.0.154"

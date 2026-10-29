@@ -20,20 +20,22 @@ replace the repository's latest crate release. New snapshots contain:
 | Asset | Contents |
 | --- | --- |
 | `card-data.jsonl.gz` | Gzip-compressed JSON Lines, one resolved digital object per line |
-| `snapshot.json` | Source URLs, application version, manifest digest, schema version, tag, and object count |
+| `snapshot.json` | Source provenance, schema version, object count, shared set metadata, and artwork configuration |
 | `MTGO.application` | Original deployment-manifest bytes |
 | `MTGO.exe.manifest` | Original application-manifest bytes |
-| `SHA256SUMS` | SHA-256 checksums for the other four assets |
+| `MTGO.exe.config` | Original client configuration used for artwork URLs |
+| `SHA256SUMS` | SHA-256 checksums for the other assets |
 
 The exporter pins the downloaded manifests before fetching components. It checks
-declared resource sizes and supported content digests, parses the components,
+declared resource sizes and supported content digests for components and artwork
+configuration, parses the components,
 and resolves every object before producing the export. Failed downloads,
 integrity checks, parsing, or resolution prevent publication. The workflow uses
 `softprops/action-gh-release` to stage assets in a draft and publish after every
 upload completes. An interrupted draft is retried on the next run. Published
 snapshots are retained without replacement.
 
-## JSON Lines schema version 2
+## JSON Lines schema version 3
 
 Each [JSON Lines](https://jsonlines.org/) record is one complete JSON object,
 including cards, tokens, and products, in ascending numeric ID order.
@@ -42,21 +44,50 @@ end with LF. Newlines inside strings are escaped, so each record stays on one
 physical line:
 
 ```jsonl
-{"id":33914,"set":{"id":"V09","age":null,"kind":null},"fields":{"CARDNAME_STRING":"Mystical Tutor"}}
-{"id":33915,"set":{"id":"V09","age":null,"kind":null},"fields":{"CARDNAME_STRING":"Mystical Tutor","IS_FOIL":true}}
+{"id":33914,"name":"Mystical Tutor","artist":"David O’Connor","set":"V09","art_id":1982,"mana_value":1,"colors":["U"],"rarity":"mythic","foil":false,"mtgo":{"FRAMESTYLE":"3"}}
+{"id":33915,"name":"Mystical Tutor","artist":"David O’Connor","set":"V09","art_id":1982,"mana_value":1,"colors":["U"],"rarity":"mythic","foil":true,"mtgo":{"FRAMESTYLE":"3","CLONE_ID":"33914"}}
 ```
 
-The illustrated fields are abbreviated. Field names preserve the source XML
-names, lookup references are replaced by their text, and clone inheritance is
-resolved. Values are strings, `true` for a presence-only flag, or objects for
-nested property groups. Unknown fields are retained. Empty strings remain
-strings. The `set` metadata describes the object's source set fragment; resolved
-properties such as `CARDSETNAME_STRING` remain in `fields`.
+The illustrated records are abbreviated. Lookup references and clone inheritance
+are resolved before the library's friendly projection assigns these aliases:
 
-`snapshot.json` records `schema_version: 2`, the source URLs, application
-version, manifest SHA-256, release tag, and object count. Provenance is kept
-there rather than repeated on every record. Release tags continue to track the
-upstream MTGO application version.
+| Source property | JSON field | Value |
+| --- | --- | --- |
+| `CARDNAME_STRING` | `name` | Display name |
+| `ARTIST_NAME_STRING` | `artist` | Artist text |
+| `ARTID` | `art_id` | Unsigned integer |
+| `REAL_ORACLETEXT_STRING` | `rules_text` | Original MTGO text |
+| `FLAVORTEXT_STRING` | `flavor_text` | Original MTGO text |
+| `MANA_COST_STRING` | `mana_cost` | Original MTGO mana notation |
+| `CONVERTED_MANA_COST` | `mana_value` | Unsigned integer |
+| `CARDSETNAME_STRING` | `set` | Set code, falling back to the source fragment |
+| `COLLECTOR_INFO_STRING` | `collector_number` | Text, including values such as `8/15` |
+| `COLOR`, `COLOR_IDENTITY` | `colors`, `color_identity` | Arrays of `W`, `U`, `B`, `R`, `G`; `[]` for colorless |
+| `RARITY_STATUS` | `rarity` | `basic_land`, `common`, `uncommon`, `rare`, `mythic`, `token`, `bonus`, `promo`, or `play_aid` |
+| `IS_FOIL` | `foil` | Boolean; absent means false |
+
+Optional fields are omitted when absent. Explicit empty text stays empty. A field
+with an unfamiliar value or representation remains in `mtgo`, without an invented
+normalized value. Every other effective property also stays in `mtgo`, using its
+original name. This includes numeric-looking codes such as `"001"`, printed stats
+such as `"X"` or `"*/*"`, and recursive face, prototype, or dungeon groups. Raw
+values remain strings, presence flags serialize as `true`, and groups as objects.
+Mana and rules text retain MTGO's formatting; they are not converted to Scryfall
+notation or plain Oracle text.
+
+`art_url` is the canonical JPEG artwork crop derived from the client configuration
+and inherited art ID. It is separate from the texture and catalog IDs, and does
+not include a card frame. Cards and card sub-objects use this convention; tokens,
+play aids, products, and avatars use other conventions and have no generated URL.
+Constructing a URL does not request the image or guarantee its availability.
+
+`snapshot.json` records `schema_version: 3`, source URLs and digests, the release
+tag, object count, and `sets`, a dictionary of source set codes to their `age` and
+`kind`. These values retain exact spelling, empty strings, and nulls; `age` is an
+opaque source value rather than a calendar year. Records reference shared metadata
+by `set`, or by the optional `source_set` when the declaring fragment differs from
+the resolved set code. The `artwork` object records `config_url`, `config_sha256`,
+and the resolved image `base_url`. Release tags still use only the MTGO version.
 
 The format supports streaming through tools such as `jq` without reading a
 single enclosing array. For example, `gzip -dc card-data.jsonl.gz | head -n 1`
@@ -64,10 +95,12 @@ prints the first object.
 
 ### Earlier snapshots
 
-Schema version 1 used a single JSON document with an `objects` array in
-`card-data.json.gz`. Already published releases retain their original assets;
-the new format starts with the next application version. A downloaded schema 1
-file can be converted locally:
+Schema version 2 used the same JSONL filename, with records containing `id`, a
+repeated source `set` object, and the original property map in `fields`. Schema
+version 1 used a single JSON document with an `objects` array in `card-data.json.gz`.
+Already published releases retain their original schemas; the scheduled workflow
+skips versions that are already published. A schema 1 download can be converted
+to the schema 2 record layout locally:
 
 ```sh
 jq -c '.objects[]' card-data.json > card-data.jsonl

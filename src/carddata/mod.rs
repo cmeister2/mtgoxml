@@ -2,12 +2,16 @@
 
 mod database;
 mod error;
+mod friendly;
 mod model;
 mod parser;
+mod set_metadata;
 
 pub use database::{CardDatabase, CardView, ResolvedObject, ResolvedValue};
 pub use error::Error;
+pub use friendly::{Color, FriendlyObject, FriendlyValue, Rarity};
 pub use model::{CardDataFile, CardSet, CatalogId, DigitalObject, FieldValue, LookupTable};
+pub use set_metadata::SetMetadata;
 
 use std::io::Read;
 
