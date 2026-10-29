@@ -84,6 +84,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Test data release publication
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
   release:
     name: Release

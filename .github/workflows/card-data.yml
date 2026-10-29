@@ -1,0 +1,44 @@
+name: MTGO card data
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mtgo-card-data-releases
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Publish new application snapshot
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build exporter
+        run: cargo build --locked --release --example export --features snapshot
+      - name: Download current manifests
+        run: target/release/examples/export probe snapshot
+      - name: Check for a published snapshot
+        id: release
+        run: python3 scripts/publish_snapshot.py check snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download, validate, and export card data
+        if: steps.release.outputs.needs_export == 'true'
+        run: target/release/examples/export export snapshot
+      - name: Publish completed snapshot
+        if: steps.release.outputs.needs_export == 'true'
+        run: python3 scripts/publish_snapshot.py publish snapshot --target "$GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

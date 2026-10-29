@@ -54,3 +54,10 @@ so the first `feat:` after it selects `0.1.0`. Include that tag when pushing the
 branch.
 
 Pull requests dry-run release analysis. Publishing runs only on pushes to `main`.
+
+The separate [data-release workflow](data-releases.md) publishes MTGO snapshots
+on a six-hour schedule. Its publication lifecycle is covered by offline tests:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
+```
