@@ -229,6 +229,7 @@ name = "mtgoxml"
 version = "0.0.0"
 dependencies = [
  "clickonce",
+ "roxmltree",
  "ureq",
  "url",
 ]

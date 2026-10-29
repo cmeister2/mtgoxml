@@ -29,6 +29,10 @@ pub enum Error {
     ApplicationIdentityMismatch,
     /// Multiple resources declare the same path, ignoring case and separators.
     DuplicateResource(String),
+    /// CardDataSource parsing, snapshot consistency, or object resolution failed.
+    CardData(crate::carddata::Error),
+    /// A requested set or required lookup table is absent from the manifest.
+    MissingCardDataResource(String),
     /// An HTTP request failed, including unsuccessful status codes.
     #[cfg(feature = "http")]
     Http(Box<ureq::Error>),
@@ -56,8 +60,12 @@ impl fmt::Display for Error {
                 formatter.write_str("application identity does not match the deployment reference")
             }
             Self::DuplicateResource(path) => write!(formatter, "duplicate resource path: {path}"),
+            Self::CardData(error) => write!(formatter, "invalid CardDataSource data: {error}"),
+            Self::MissingCardDataResource(path) => {
+                write!(formatter, "CardDataSource resource not found: {path}")
+            }
             #[cfg(feature = "http")]
-            Self::Http(error) => write!(formatter, "manifest request failed: {error}"),
+            Self::Http(error) => write!(formatter, "HTTP request failed: {error}"),
         }
     }
 }
@@ -67,10 +75,17 @@ impl std::error::Error for Error {
         match self {
             Self::Manifest(error) => Some(error),
             Self::Url(error) => Some(error),
+            Self::CardData(error) => Some(error),
             #[cfg(feature = "http")]
             Self::Http(error) => Some(error.as_ref()),
             _ => None,
         }
+    }
+}
+
+impl From<crate::carddata::Error> for Error {
+    fn from(error: crate::carddata::Error) -> Self {
+        Self::CardData(error)
     }
 }
 

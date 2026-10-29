@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='utf-8'?>
+<CardSet id="10E" age="94" cardsetType="PAPER">
+  <DigitalObject DigitalObjectCatalogID="DOC_23961">
+    <CARDNAME_STRING id="ID1027_31390" />
+    <CARDNAME_TOKEN id="ID1028_30883" />
+    <CARDSETNAME_STRING id="ID1285_2" />
+    <CARDTEXTURE_NUMBER value="47922" />
+    <DIGITAL_OBJECT_TYPE_CODE_STRING value="BSTR" />
+    <IS_BOOSTER value="1" />
+    <IS_DIGITALOBJECT value="1" />
+    <PREMIUM_ODDS value="56" />
+    <REAL_ORACLETEXT_STRING id="ID2849_358" />
+  </DigitalObject>
+</CardSet>

@@ -1,9 +1,10 @@
-//! Discover resources in the Magic: The Gathering Online ClickOnce deployment.
+//! Discover and resolve data from the Magic: The Gathering Online deployment.
 //!
 //! Follow the deployment's application-manifest reference to build a catalog of
 //! file and assembly download URLs. Versioned directories are discovered, never
 //! guessed. The default build performs no network requests; the optional `http`
-//! feature adds [`Client`]. Payloads are neither downloaded nor parsed.
+//! feature adds `Client`. The [`carddata`] module parses CardDataSource components
+//! and resolves lookup references and clone inheritance into complete objects.
 //!
 //! ```
 //! use mtgoxml::{Deployment, LIVE_DEPLOYMENT_URL};
@@ -25,6 +26,8 @@ mod error;
 mod location;
 mod resource;
 
+pub mod carddata;
+
 #[cfg(feature = "http")]
 mod client;
 
@@ -33,6 +36,7 @@ pub use clickonce;
 /// URL type used for manifest and payload locations.
 pub use url::Url;
 
+pub use carddata::{CardDatabase, CardView, ResolvedObject};
 #[cfg(feature = "http")]
 pub use client::{Client, transport};
 pub use error::Error;
@@ -208,6 +212,14 @@ pub struct Application {
 }
 
 impl Application {
+    /// Create an empty card database bound to this application snapshot.
+    ///
+    /// Insert parsed components with [`CardDatabase::insert`], or enable `http`
+    /// and use `Client::load_card_sets` or `Client::load_card_database`.
+    pub fn card_database(&self) -> CardDatabase {
+        CardDatabase::new(self)
+    }
+
     /// The deployment that selected this application.
     pub fn deployment(&self) -> &Deployment {
         &self.deployment

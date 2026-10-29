@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='utf-8'?>
+<CardSet id="BRO" age="348" cardsetType="">
+  <DigitalObject DigitalObjectCatalogID="DOC_104554">
+    <ARTID value="431903" />
+    <ARTIST_NAME_STRING id="ID514_1489" />
+    <CARDNAME_STRING id="ID1027_35768" />
+    <CARDNAME_TOKEN id="ID1028_35178" />
+    <CARDSETNAME_STRING id="ID1285_60" />
+    <CARDTEXTURE_NUMBER value="209108" />
+    <COLLECTOR_INFO_STRING value="292" />
+    <COLOR id="ID1286_13" />
+    <COLOR_IDENTITY id="ID1287_14" />
+    <COMPONENT_NAME_STRING id="ID1289_300" />
+    <COMPONENT_VERSION_STRING id="ID1290_5" />
+    <CONVERTED_MANA_COST id="ID1291_3" />
+    <CREATURE_TYPEID0 id="ID1292_44" />
+    <CREATURE_TYPE_STRING0 id="ID1548_44" />
+    <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD" />
+    <FLAVORTEXT_STRING id="ID1806_1" />
+    <FRAMESTYLE value="111" />
+    <IS_ARTIFACT value="1" />
+    <IS_CREATURE value="1" />
+    <MANA_COST_STRING id="ID2327_837" />
+    <POWER value="8" />
+    <POWERTOUGHNESS_STRING id="ID2843_133" />
+    <PREMIUM_EFFECT value="1" />
+    <PROMO_LABEL_STRING id="ID2846_1" />
+    <PROTOTYPE value="1" />
+    <PROTOTYPE_ATTRIBUTES_LIST>
+      <COLOR id="ID1286_14" />
+      <CONVERTED_MANA_COST id="ID1291_12" />
+      <MANA_COST_STRING id="ID2327_251" />
+      <POWER value="3" />
+      <POWERTOUGHNESS_STRING id="ID2843_77" />
+      <TOUGHNESS value="3" />
+    </PROTOTYPE_ATTRIBUTES_LIST>
+    <RARITY_STATUS id="ID2848_7" />
+    <REAL_ORACLETEXT_STRING id="ID2849_24524" />
+    <SECURITY_STAMP value="1" />
+    <SHOULDWORK value="1" />
+    <TOUGHNESS value="8" />
+    <WATERMARK value="0" />
+  </DigitalObject>
+</CardSet>

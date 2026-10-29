@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<CardSet id="V09" age="109" cardsetType="FROM_THE_VAULT">
+  <DigitalObject DigitalObjectCatalogID="DOC_33914">
+    <ARTID value="1982" />
+    <ARTIST_NAME_STRING id="ID514_442" />
+    <CARDNAME_STRING id="ID1027_20978" />
+    <CARDNAME_TOKEN id="ID1028_20617" />
+    <CARDSETNAME_STRING id="ID1285_389" />
+    <CARDTEXTURE_NUMBER value="67828" />
+    <COLLECTOR_INFO_STRING value="8/15" />
+    <COLOR id="ID1286_5" />
+    <COLOR_IDENTITY id="ID1287_5" />
+    <CONVERTED_MANA_COST id="ID1291_2" />
+    <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD" />
+    <FLAVORTEXT_STRING id="ID1806_23357" />
+    <FRAMESTYLE value="3" />
+    <INSTANT value="1" />
+    <MANA_COST_STRING id="ID2327_696" />
+    <PREMIUM_EFFECT value="1" />
+    <PROMO_LABEL_STRING id="ID2846_1" />
+    <RARITY_STATUS id="ID2848_4" />
+    <REAL_ORACLETEXT_STRING id="ID2849_18144" />
+    <SHOULDWORK value="1" />
+    <WATERMARK value="0" />
+  </DigitalObject>
+  <DigitalObject DigitalObjectCatalogID="DOC_33915">
+    <CARDTEXTURE_NUMBER value="67831" />
+    <CLONE_ID value="33914" />
+    <IS_FOIL />
+  </DigitalObject>
+</CardSet>

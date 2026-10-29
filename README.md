@@ -1,10 +1,9 @@
 # mtgoxml
 
-Discover Magic: The Gathering Online resources from its ClickOnce deployment.
-The library follows the deployment's application-manifest reference and builds
-download URLs for every declared file and downloadable assembly. Resource
-discovery follows versioned paths from the manifests rather than hardcoding a
-particular MTGO build.
+Discover and resolve Magic: The Gathering Online data from its ClickOnce
+deployment. The library locates versioned resources, parses CardDataSource
+components, and combines lookup tables and clone inheritance into complete
+digital objects. Raw source records remain available alongside resolved views.
 
 The live entry point is
 [`MTGO.application`](http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/MTGO.application).
@@ -49,6 +48,52 @@ cargo run --locked --features http --example resources
 
 Pass a deployment URL as the example's first argument to inspect another endpoint.
 
+## Resolved card data
+
+Load selected sets and the lookup tables referenced by their properties:
+
+```rust
+use mtgoxml::Client;
+
+let client = Client::new();
+let application = client.live()?;
+let database = client.load_card_sets(&application, ["V09"])?;
+let card = database.card(33915)?;
+
+assert_eq!(card.name(), Some("Mystical Tutor"));
+assert!(card.is_foil()?);
+println!("{}: {:?}", card.set_code(), card.rules_text());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`card(33915)` applies the foil record's overrides to its base object, then joins
+each lookup reference by table name and opaque ID. Names, rules text, mana costs,
+colors, rarity, and arbitrary properties are available on the resolved view.
+Nested property groups retain fields for flipped faces, split cards, prototype
+costs, prepared spells, and dungeon states, with their references resolved too.
+Empty strings, absent fields, presence flags, and nested groups stay distinct.
+Clone ancestry is followed iteratively, with explicit errors for missing bases
+and cycles. A child replaces an inherited property as a whole.
+
+```sh
+cargo run --locked --features http --example card -- 33915 V09
+```
+
+Set loading accepts case-insensitive codes and includes associated `_DO.xml`
+fragments. It requests only referenced lookup tables, including those inside
+nested groups. Clone bases outside the selected sets must be loaded as well;
+otherwise loading reports the missing object ID. For the complete dataset, use
+`client.load_card_database(&application)`. This is an explicit download that can
+exceed 100 MiB. Both loading methods validate all loaded objects before returning.
+`live()` and `discover()` continue to fetch only the two manifests.
+
+Use `database.object(id)` for any digital object, including tokens, boosters,
+decks, and containers. `database.card(id)` requires MTGO's `CARD` object-type
+code. `object.raw()` preserves the child record, `object.fields()` exposes all
+resolved fields, and `database.raw_object(id)` avoids resolution entirely.
+MTGO text and mana syntax are preserved; rendering and normalization are left
+to callers.
+
 ## Offline or custom transport
 
 The default feature set has no HTTP client. Use your own transport or saved
@@ -72,6 +117,42 @@ Use `Deployment::from_manifest` and `Deployment::with_application` with parsed
 application response URL to `with_application` if your transport followed a
 redirect.
 
+The raw parsers and resolver work without the `http` feature:
+
+```rust
+use mtgoxml::carddata::CardDataFile;
+
+// Use the application snapshot discovered or parsed above.
+let mut database = application.card_database();
+let set = CardDataFile::from_reader(std::fs::File::open("client_V09.xml")?)?;
+database.insert(&application, set)?;
+// Insert its lookup tables and any other set fragments in the same way.
+database.validate()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Components may be inserted in any order. `CardDataFile` distinguishes `Set` and
+`Lookup`; source properties use `FieldValue::{Reference, Literal, Flag, Fields}`.
+Byte input accepts UTF-8 with an optional BOM. The parser limits each component
+to 16 MiB and 250,000 XML nodes by default, and property nesting to 64 levels.
+`carddata::ParseOptions` customizes byte/node limits; the HTTP client accepts
+these through `with_card_data_options`. DTD processing is disabled: the manifest
+already lists the component files, so the master index needs no entity expansion.
+The published DTD is not enforced as a complete schema.
+
+Each database is bound to its application's manifest URL and identity. Inserting
+with another application context returns `SourceMismatch`; duplicate tables or
+object IDs are rejected without changing existing data. Caller-supplied bytes
+rely on the supplied source context; signatures and payload hashes are not
+verified. Keep cached components associated with their original application
+snapshot.
+
+To validate a saved dataset, pass a directory containing the component basenames:
+
+```sh
+cargo run --locked --example database -- DEPLOYMENT_URL MTGO.application MTGO.exe.manifest CardDataSource 33915
+```
+
 ## Resources
 
 - `resources()` includes files and installed assemblies, including optional
@@ -93,8 +174,8 @@ Discovery rejects ambiguous application references, mismatched application
 identities, duplicate logical paths, and unsupported URL schemes. File paths must
 be relative and contain no empty or dot segments. These checks establish catalog
 consistency; signatures and payload hashes are retained without verification.
-The crate discovers locations and metadata; it does not parse MTGO-specific XML,
-download payloads, install, or launch MTGO.
+The crate parses CardDataSource XML; other resource formats remain available as
+download locations and manifest metadata. It does not install or launch MTGO.
 
 ## Development
 
@@ -110,9 +191,10 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 evenflow check . --strict
 ```
 
-Tests use synthetic manifests and a captured live deployment, with provenance in
-`fixtures/live/capture.json`. Assertions concern the checked-in capture rather
-than the mutable service. HTTP integration tests use a local server.
+Tests use synthetic manifests, a captured live deployment, and small derived
+CardDataSource fixtures with provenance. Assertions concern the checked-in
+captures rather than the mutable service. HTTP integration tests use a local
+server and check selective loading, lookup resolution, and payload limits.
 
 This fresh implementation depends on the new `clickonce` Git API, pinned to a
 specific commit. Before publishing to crates.io, release that parser and replace
