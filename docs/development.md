@@ -54,3 +54,8 @@ so the first `feat:` after it selects `0.1.0`. Include that tag when pushing the
 branch.
 
 Pull requests dry-run release analysis. Publishing runs only on pushes to `main`.
+
+The separate [data-release workflow](data-releases.md) runs the optional
+`mtgoxml-export` executable on a six-hour schedule and publishes its files with
+`softprops/action-gh-release`. The executable's regression tests run with the
+all-target, all-feature Cargo suite above.

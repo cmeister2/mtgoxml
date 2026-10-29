@@ -1,0 +1,60 @@
+name: MTGO card data
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mtgo-card-data-releases
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Publish new application snapshot
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build exporter
+        run: cargo build --locked --release --bin mtgoxml-export --features snapshot
+      - name: Download current manifests
+        id: manifest
+        run: target/release/mtgoxml-export probe snapshot
+      - name: Check for a published snapshot
+        id: release
+        uses: cardinalby/git-get-release-action@2ab178299eecb253f820dcf2cce11f62be1178f7 # v1
+        with:
+          tag: ${{ steps.manifest.outputs.tag }}
+          draft: 'false'
+          doNotFailIfNotFound: 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download, validate, and export card data
+        if: steps.release.outputs.id == ''
+        run: target/release/mtgoxml-export export snapshot
+      - name: Publish completed snapshot
+        if: steps.release.outputs.id == ''
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          tag_name: ${{ steps.manifest.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: MTGO card data ${{ steps.manifest.outputs.application_version }}
+          body_path: snapshot/release-notes.md
+          make_latest: 'false'
+          fail_on_unmatched_files: true
+          files: |
+            snapshot/card-data.json.gz
+            snapshot/snapshot.json
+            snapshot/MTGO.application
+            snapshot/MTGO.exe.manifest
+            snapshot/SHA256SUMS

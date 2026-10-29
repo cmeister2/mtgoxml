@@ -107,3 +107,8 @@ cargo run --locked --features http --example card -- 33915 V09
 
 The `resources` example accepts a deployment URL as its first argument. The `card`
 example accepts an object ID and set code.
+
+The optional `snapshot` feature enables the `mtgoxml-export` executable, which
+downloads verified components and writes compressed JSON. See the repository's
+[data-release guide](https://github.com/cmeister2/mtgoxml/blob/main/docs/data-releases.md)
+for its schema and scheduled publication workflow.
