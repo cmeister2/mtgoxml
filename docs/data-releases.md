@@ -15,11 +15,11 @@ The workflow uses `cardinalby/git-get-release-action` to look for a published
 release with that exact tag before downloading the catalog.
 
 Data releases appear alongside crate releases, with distinct tags. They do not
-replace the repository's latest crate release. Each contains:
+replace the repository's latest crate release. New snapshots contain:
 
 | Asset | Contents |
 | --- | --- |
-| `card-data.json.gz` | Gzip-compressed JSON with resolved digital objects |
+| `card-data.jsonl.gz` | Gzip-compressed JSON Lines, one resolved digital object per line |
 | `snapshot.json` | Source URLs, application version, manifest digest, schema version, tag, and object count |
 | `MTGO.application` | Original deployment-manifest bytes |
 | `MTGO.exe.manifest` | Original application-manifest bytes |
@@ -33,31 +33,17 @@ integrity checks, parsing, or resolution prevent publication. The workflow uses
 upload completes. An interrupted draft is retried on the next run. Published
 snapshots are retained without replacement.
 
-## JSON schema version 1
+## JSON Lines schema version 2
 
-The root contains `schema_version`, `source`, and `objects`. `source` records
-the final deployment and application-manifest URLs, application version, and
-SHA-256 of the original application-manifest bytes. `objects` contains every
-digital object, including cards, tokens, and products, in ascending numeric ID
-order:
+Each [JSON Lines](https://jsonlines.org/) record is one complete JSON object,
+including cards, tokens, and products, in ascending numeric ID order.
+Records use UTF-8 without a byte-order mark and
+end with LF. Newlines inside strings are escaped, so each record stays on one
+physical line:
 
-```json
-{
-  "schema_version": 1,
-  "source": {
-    "deployment_url": "http://example.test/MTGO.application",
-    "application_manifest_url": "http://example.test/MTGO.exe.manifest",
-    "application_version": "3.4.159.4708",
-    "application_manifest_sha256": "..."
-  },
-  "objects": [
-    {
-      "id": 33915,
-      "set": {"id": "V09", "age": null, "kind": null},
-      "fields": {"CARDNAME_STRING": "Mystical Tutor", "IS_FOIL": true}
-    }
-  ]
-}
+```jsonl
+{"id":33914,"set":{"id":"V09","age":null,"kind":null},"fields":{"CARDNAME_STRING":"Mystical Tutor"}}
+{"id":33915,"set":{"id":"V09","age":null,"kind":null},"fields":{"CARDNAME_STRING":"Mystical Tutor","IS_FOIL":true}}
 ```
 
 The illustrated fields are abbreviated. Field names preserve the source XML
@@ -67,8 +53,25 @@ nested property groups. Unknown fields are retained. Empty strings remain
 strings. The `set` metadata describes the object's source set fragment; resolved
 properties such as `CARDSETNAME_STRING` remain in `fields`.
 
-The schema version is recorded in the JSON and snapshot metadata; release tags
-track the upstream MTGO application version.
+`snapshot.json` records `schema_version: 2`, the source URLs, application
+version, manifest SHA-256, release tag, and object count. Provenance is kept
+there rather than repeated on every record. Release tags continue to track the
+upstream MTGO application version.
+
+The format supports streaming through tools such as `jq` without reading a
+single enclosing array. For example, `gzip -dc card-data.jsonl.gz | head -n 1`
+prints the first object.
+
+### Earlier snapshots
+
+Schema version 1 used a single JSON document with an `objects` array in
+`card-data.json.gz`. Already published releases retain their original assets;
+the new format starts with the next application version. A downloaded schema 1
+file can be converted locally:
+
+```sh
+jq -c '.objects[]' card-data.json > card-data.jsonl
+```
 
 ## Run the exporter locally
 
@@ -76,7 +79,7 @@ track the upstream MTGO application version.
 cargo build --locked --release --bin mtgoxml-export --features snapshot
 target/release/mtgoxml-export probe /tmp/mtgo-snapshot
 target/release/mtgoxml-export export /tmp/mtgo-snapshot
-gzip -dc /tmp/mtgo-snapshot/card-data.json.gz > /tmp/card-data.json
+gzip -dc /tmp/mtgo-snapshot/card-data.jsonl.gz > /tmp/card-data.jsonl
 ```
 
 The second command downloads manifests; the third explicitly downloads the full
