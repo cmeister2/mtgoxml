@@ -92,6 +92,30 @@ flags, and groups stay distinct.
 Use `object.raw()` for the original child record, `object.set()` for its declaring
 fragment, or `database.raw_object(id)` to skip resolution entirely.
 
+## Friendly views and artwork
+
+[`ResolvedObject::friendly`] creates an owned [`FriendlyObject`] with readable
+names such as `name`, `artist`, and `rules_text`. It normalizes recognized art IDs,
+mana values, colors, rarities, and foil flags. Its `mtgo` map retains unpromoted
+fields and unfamiliar values, including nested groups and numeric-looking text.
+It performs no network requests. Printed statistics, collector information, mana
+notation, and rules formatting retain their source semantics.
+
+[`CardDatabase::set_metadata`] collects the source `age` and `kind` once per set
+code. It rejects conflicting fragments rather than choosing one silently. A
+friendly object's optional `source_set` identifies a different declaring fragment;
+use `source_set` when present, otherwise `set`, to look up shared metadata.
+
+With the optional `serde` feature, friendly objects serialize directly to their
+JSON representation, independently of HTTP support. See the repository's
+[export schema](https://github.com/cmeister2/mtgoxml/blob/main/docs/data-releases.md)
+for property mappings and migration details.
+
+[`crate::ArtworkResolver`] reads the artwork CDN root from client configuration.
+Its `for_object` method resolves canonical art-crop URLs from supported objects,
+including inherited art IDs, without downloading images. Enable `http` to use
+`Client::load_artwork` to fetch that configuration separately from card data.
+
 ## Parsing limits and provenance
 
 Byte input accepts UTF-8 with an optional BOM. `ParseOptions` defaults to 16 MiB

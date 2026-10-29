@@ -57,4 +57,5 @@ jobs:
             snapshot/snapshot.json
             snapshot/MTGO.application
             snapshot/MTGO.exe.manifest
+            snapshot/MTGO.exe.config
             snapshot/SHA256SUMS

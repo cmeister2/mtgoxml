@@ -17,7 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(card.name(), Some("Mystical Tutor"));
     assert!(card.is_foil()?);
-    println!("{}: {:?}", card.set_code(), card.rules_text());
+    let artwork = client.load_artwork(&application)?;
+    let mut friendly = card.friendly()?;
+    friendly.art_url = artwork.for_object(card.object()).map(|url| url.to_string());
+    println!("{:?}: {:?}", friendly.name, friendly.art_url);
     Ok(())
 }
 # #[cfg(not(feature = "http"))]
@@ -31,12 +34,17 @@ Choose how much to load:
 | `Client::live()` or `discover(url)` | The deployment and application manifests |
 | `Client::load_card_sets(&application, ["V09"])` | Selected set fragments and their referenced lookup tables |
 | `Client::load_card_database(&application)` | Every CardDataSource component; this can exceed 100 MiB |
+| `Client::load_artwork(&application)` | The client configuration used to resolve artwork URLs |
 
 Set codes are case insensitive. Selected loading includes both `client_CODE.xml`
 and `client_CODE_DO.xml` when present, and follows references inside nested
 property groups. If a clone's base belongs to another set, include that set too;
 otherwise loading reports the missing object ID. Both database-loading methods
 validate all loaded objects before returning.
+
+`ResolvedObject::friendly()` exposes readable, typed fields and retains every
+unpromoted property in `mtgo`. Enable `serde` to serialize that view without
+requiring HTTP. The `snapshot` feature includes both capabilities for the exporter.
 
 ## Resource discovery
 

@@ -1,5 +1,6 @@
 #![doc = include_str!("../docs/usage.md")]
 
+mod artwork;
 mod error;
 mod location;
 mod resource;
@@ -14,7 +15,8 @@ pub use clickonce;
 /// URL type used for manifest and payload locations.
 pub use url::Url;
 
-pub use carddata::{CardDatabase, CardView, ResolvedObject};
+pub use artwork::{ArtworkError, ArtworkResolver};
+pub use carddata::{CardDatabase, CardView, FriendlyObject, ResolvedObject};
 #[cfg(feature = "http")]
 pub use client::{Client, transport};
 pub use error::Error;

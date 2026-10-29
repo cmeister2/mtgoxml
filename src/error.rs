@@ -31,6 +31,10 @@ pub enum Error {
     DuplicateResource(String),
     /// CardDataSource parsing, snapshot consistency, or object resolution failed.
     CardData(crate::carddata::Error),
+    /// Artwork configuration could not be parsed or resolved.
+    Artwork(crate::ArtworkError),
+    /// A required application resource is absent from the manifest.
+    MissingResource(String),
     /// A requested set or required lookup table is absent from the manifest.
     MissingCardDataResource(String),
     /// An HTTP request failed, including unsuccessful status codes.
@@ -61,6 +65,10 @@ impl fmt::Display for Error {
             }
             Self::DuplicateResource(path) => write!(formatter, "duplicate resource path: {path}"),
             Self::CardData(error) => write!(formatter, "invalid CardDataSource data: {error}"),
+            Self::Artwork(error) => write!(formatter, "invalid artwork configuration: {error}"),
+            Self::MissingResource(path) => {
+                write!(formatter, "application resource not found: {path}")
+            }
             Self::MissingCardDataResource(path) => {
                 write!(formatter, "CardDataSource resource not found: {path}")
             }
@@ -76,6 +84,7 @@ impl std::error::Error for Error {
             Self::Manifest(error) => Some(error),
             Self::Url(error) => Some(error),
             Self::CardData(error) => Some(error),
+            Self::Artwork(error) => Some(error),
             #[cfg(feature = "http")]
             Self::Http(error) => Some(error.as_ref()),
             _ => None,
@@ -86,6 +95,12 @@ impl std::error::Error for Error {
 impl From<crate::carddata::Error> for Error {
     fn from(error: crate::carddata::Error) -> Self {
         Self::CardData(error)
+    }
+}
+
+impl From<crate::ArtworkError> for Error {
+    fn from(error: crate::ArtworkError) -> Self {
+        Self::Artwork(error)
     }
 }
 

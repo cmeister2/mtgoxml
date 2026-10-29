@@ -636,3 +636,97 @@ fn card_data_missing_lookup_and_clone_base_report_required_resources() {
         ["/live/version/CardDataSource/client_ONE_DO.xml"]
     );
 }
+
+/// Relative artwork roots use the final configuration URL, including mapped payloads.
+#[test]
+fn artwork_configuration_uses_its_final_response_url() {
+    for mapped in [false, true] {
+        let server = Server::new(|path| match path {
+            "/live/version/MTGO.exe.config" | "/live/version/MTGO.exe.config.deploy" => response(
+                "302 Found",
+                "Location: /cdn/settings/MTGO.exe.config\r\n",
+                b"",
+            ),
+            "/cdn/settings/MTGO.exe.config" => response(
+                "200 OK",
+                "",
+                br#"<configuration><downloadSource>
+                    <artRoot value="../Graphics/" />
+                    <cardArtSubPath value="Cards/Pics" />
+                </downloadSource></configuration>"#,
+            ),
+            _ => response("404 Not Found", "", b"unexpected artwork request"),
+        });
+        let application = card_application(&server.origin, &["MTGO.exe.config"], mapped);
+        let resolver = client(true).load_artwork(&application).unwrap();
+        assert_eq!(
+            resolver.base_url().as_str(),
+            format!("{}/cdn/Graphics/Cards/Pics/", server.origin)
+        );
+        let suffix = if mapped { ".deploy" } else { "" };
+        assert_eq!(
+            server.requests(),
+            [
+                format!("/live/version/MTGO.exe.config{suffix}"),
+                "/cdn/settings/MTGO.exe.config".to_owned(),
+            ]
+        );
+    }
+}
+
+/// Missing resources make no request and valid-looking HTTP error bodies remain errors.
+#[test]
+fn artwork_configuration_missing_resource_and_http_status_are_rejected() {
+    let server = Server::new(|_| {
+        response(
+            "404 Not Found",
+            "",
+            br#"<configuration><downloadSource>
+                <artRoot value="https://art.example.test/Graphics/" />
+                <cardArtSubPath value="Cards/Pics" />
+            </downloadSource></configuration>"#,
+        )
+    });
+    let missing = card_application(&server.origin, &["unrelated.config"], false);
+    assert!(matches!(
+        client(false).load_artwork(&missing),
+        Err(Error::MissingResource(path)) if path == "MTGO.exe.config"
+    ));
+    assert!(server.requests().is_empty());
+
+    let application = card_application(&server.origin, &["MTGO.exe.config"], false);
+    assert!(matches!(
+        client(false).load_artwork(&application),
+        Err(Error::Http(error)) if matches!(*error, transport::Error::StatusCode(404))
+    ));
+    assert_eq!(server.requests(), ["/live/version/MTGO.exe.config"]);
+}
+
+/// Chunked configuration bodies cannot bypass the 16 MiB HTTP input budget.
+#[test]
+fn artwork_configuration_streaming_response_is_bounded() {
+    let server = Server::new(|_| {
+        let mut body = br#"<configuration><downloadSource>
+            <artRoot value="https://art.example.test/Graphics/" />
+            <cardArtSubPath value="Cards/Pics" />
+        </downloadSource></configuration>"#
+            .to_vec();
+        // Without a byte limit this remains valid XML with trailing whitespace.
+        body.resize(16 * 1024 * 1024 + 1, b' ');
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        response.extend_from_slice(b"\r\n0\r\n\r\n");
+        response
+    });
+    let application = card_application(&server.origin, &["MTGO.exe.config"], false);
+    assert!(matches!(
+        client(true).load_artwork(&application),
+        Err(Error::Http(error))
+            if matches!(*error, transport::Error::BodyExceedsLimit(limit) if limit == 16 * 1024 * 1024)
+    ));
+    assert_eq!(server.requests(), ["/live/version/MTGO.exe.config"]);
+}

@@ -8,26 +8,28 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use flate2::{Compression, GzBuilder};
-use mtgoxml::carddata::{CardDataFile, ResolvedValue};
+use mtgoxml::carddata::{CardDataFile, SetMetadata};
 use mtgoxml::clickonce::{
     Dependency, DependencyType, DigestAlgorithm, Hash, HashTransform, Manifest,
 };
-use mtgoxml::{Application, CardDatabase, Deployment, LIVE_DEPLOYMENT_URL, ResourceKind, Url};
+use mtgoxml::{
+    Application, ArtworkResolver, CardDatabase, Deployment, LIVE_DEPLOYMENT_URL, ResourceKind, Url,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
 /// Version of the published JSON representation.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 /// Bound for a raw manifest or card-data component before parsing.
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Assets hashed in the published checksum file, in their stable listing order.
-const CHECKSUM_ASSETS: [&str; 4] = [
+const CHECKSUM_ASSETS: [&str; 5] = [
     "card-data.jsonl.gz",
     "snapshot.json",
     "MTGO.application",
     "MTGO.exe.manifest",
+    "MTGO.exe.config",
 ];
 /// Errors from networking, parsing, verification, serialization, or file writes.
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -45,6 +47,17 @@ struct Source {
     application_manifest_sha256: String,
 }
 
+/// Verified configuration used to construct canonical artwork URLs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtworkSource {
+    /// Final URL from which the declared client configuration was fetched.
+    config_url: String,
+    /// SHA-256 of the original configuration bytes included in this release.
+    config_sha256: String,
+    /// Configured canonical artwork directory, including a trailing slash.
+    base_url: String,
+}
+
 /// Saved input to the export and release phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
@@ -58,6 +71,12 @@ struct Snapshot {
     /// Present only after every catalog object has been exported successfully.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     object_count: Option<usize>,
+    /// Set metadata deduplicated by the source set code after a complete export.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    sets: BTreeMap<String, SetMetadata>,
+    /// Configuration provenance, present after successful artwork discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artwork: Option<ArtworkSource>,
 }
 
 /// Dispatch manifest discovery or export of the previously captured manifest.
@@ -115,15 +134,22 @@ fn export(directory: &Path) -> Result<()> {
     }
     let (mut snapshot, application) = load_snapshot(directory)?;
     snapshot.object_count = None;
+    snapshot.sets.clear();
+    snapshot.artwork = None;
     save_metadata(directory, &snapshot)?;
     let agent = agent();
+    let (artwork, config_bytes, artwork_source) = load_artwork(&application, &agent)?;
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
+    let sets = database.set_metadata()?;
 
     // An interrupted export leaves only a temporary gzip, never a completed asset.
     let temporary = directory.join("card-data.jsonl.gz.tmp");
-    write_database(File::create(&temporary)?, &database)?;
+    write_database(File::create(&temporary)?, &database, &artwork)?;
     fs::rename(temporary, directory.join("card-data.jsonl.gz"))?;
+    fs::write(directory.join("MTGO.exe.config"), config_bytes)?;
     snapshot.object_count = Some(database.len());
+    snapshot.sets = sets;
+    snapshot.artwork = Some(artwork_source);
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
     println!("Exported {} objects", database.len());
@@ -195,10 +221,7 @@ fn load_snapshot(directory: &Path) -> Result<(Snapshot, Application)> {
 
 /// Record manifest provenance and derive the release tag from the upstream version.
 fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
-    let mut hash = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
-        write!(hash, "{byte:02x}")?;
-    }
+    let hash = digest_bytes(bytes)?;
     let version = application
         .version()
         .ok_or("application has no version")?
@@ -213,6 +236,8 @@ fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
         },
         tag: format!("mtgo-data-{version}"),
         object_count: None,
+        sets: BTreeMap::new(),
+        artwork: None,
     })
 }
 
@@ -316,8 +341,32 @@ fn load_database(
     Ok(database)
 }
 
-/// Stream one compact JSON object per LF-terminated line into a deterministic gzip.
-fn write_database(writer: impl Write, database: &CardDatabase) -> Result<()> {
+/// Verify the declared client configuration before resolving its artwork directory.
+fn load_artwork(
+    application: &Application,
+    agent: &ureq::Agent,
+) -> Result<(ArtworkResolver, Vec<u8>, ArtworkSource)> {
+    let resource = application
+        .resource("MTGO.exe.config")
+        .filter(|resource| resource.kind == ResourceKind::File)
+        .ok_or("application has no MTGO.exe.config resource")?;
+    let (url, bytes) = fetch(agent, &resource.url)?;
+    verify_bytes(&resource.path, &bytes, resource.size, &resource.hashes)?;
+    let artwork = ArtworkResolver::from_config(url.clone(), &bytes)?;
+    let provenance = ArtworkSource {
+        config_url: url.to_string(),
+        config_sha256: digest_bytes(&bytes)?,
+        base_url: artwork.base_url().to_string(),
+    };
+    Ok((artwork, bytes, provenance))
+}
+
+/// Stream friendly objects with artwork URLs into deterministic, LF-terminated JSONL.
+fn write_database(
+    writer: impl Write,
+    database: &CardDatabase,
+    artwork: &ArtworkResolver,
+) -> Result<()> {
     let mut gzip = GzBuilder::new()
         .mtime(0)
         .operating_system(255)
@@ -325,35 +374,22 @@ fn write_database(writer: impl Write, database: &CardDatabase) -> Result<()> {
     for object in database.objects() {
         // Resolve and serialize one object at a time in stable numeric ID order.
         let object = object?;
-        serde_json::to_writer(
-            &mut gzip,
-            &json!({
-                "id": object.id(),
-                "set": { "id": object.set().id, "age": object.set().age, "kind": object.set().kind },
-                "fields": fields_json(object.fields()),
-            }),
-        )?;
+        let mut friendly = object.friendly()?;
+        friendly.art_url = artwork.for_object(&object).map(|url| url.to_string());
+        serde_json::to_writer(&mut gzip, &friendly)?;
         writeln!(gzip)?;
     }
     gzip.finish()?.flush()?;
     Ok(())
 }
 
-/// Preserve text, presence flags, and recursive property groups as distinct JSON values.
-fn fields_json(fields: &BTreeMap<&str, ResolvedValue<'_>>) -> Value {
-    Value::Object(
-        fields
-            .iter()
-            .map(|(name, value)| {
-                let value = match value {
-                    ResolvedValue::Text(value) => Value::String((*value).to_owned()),
-                    ResolvedValue::Flag => Value::Bool(true),
-                    ResolvedValue::Fields(fields) => fields_json(fields),
-                };
-                ((*name).to_owned(), value)
-            })
-            .collect(),
-    )
+/// Format a raw byte digest without interpreting its text encoding.
+fn digest_bytes(bytes: &[u8]) -> Result<String> {
+    let mut hex = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(hex, "{byte:02x}")?;
+    }
+    Ok(hex)
 }
 
 /// Write human-readable metadata only after the preceding operation succeeded.
@@ -396,7 +432,7 @@ fn digest_file(path: &Path) -> Result<String> {
     Ok(hex)
 }
 
-/// Generate publication metadata only after all four complete export assets exist.
+/// Generate publication metadata only after all complete export assets exist.
 fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
     let count = snapshot
         .object_count
@@ -415,7 +451,7 @@ fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
         "Resolved MTGO catalog: {count} objects; JSON Lines schema {SCHEMA_VERSION}.\n\n\
          Application manifest: {}\n\n\
          Manifest SHA-256: `{}`\n\n\
-         Includes compressed JSON Lines, source manifests, metadata, and SHA256SUMS.\n",
+         Includes compressed JSON Lines, source manifests, artwork configuration, metadata, and SHA256SUMS.\n",
         snapshot.source.application_manifest_url, snapshot.source.application_manifest_sha256,
     );
     fs::write(directory.join("SHA256SUMS.tmp"), checksums)?;
@@ -435,6 +471,7 @@ fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Unique suffixes for temporary test directories within one process.
@@ -466,6 +503,11 @@ mod tests {
         let application_bytes = include_bytes!("../../fixtures/live/MTGO.exe.manifest");
         fs::write(capture.path.join("MTGO.application"), deployment_bytes).unwrap();
         fs::write(capture.path.join("MTGO.exe.manifest"), application_bytes).unwrap();
+        fs::write(
+            capture.path.join("MTGO.exe.config"),
+            include_bytes!("../../fixtures/artwork/download-source.config"),
+        )
+        .unwrap();
         let application = Deployment::from_bytes(LIVE_DEPLOYMENT_URL, deployment_bytes)
             .unwrap()
             .with_application_bytes(application_bytes)
@@ -552,6 +594,11 @@ mod tests {
     fn resolved_json_lines_preserve_property_forms_and_all_object_types() {
         let capture = capture();
         let (_, application) = load_snapshot(&capture.path).unwrap();
+        let artwork = ArtworkResolver::from_config(
+            Url::parse("https://patch.example.test/MTGO.exe.config").unwrap(),
+            include_bytes!("../../fixtures/artwork/download-source.config"),
+        )
+        .unwrap();
         let mut database = application.card_database();
         database
             .insert(
@@ -565,12 +612,13 @@ mod tests {
         database.insert(&application, CardDataFile::parse(r#"<CardSet id="TEST" age="7" cardsetType="future">
           <DigitalObject DigitalObjectCatalogID="DOC_2"><CLONE_ID value="1"/><IS_FOIL/><EMPTY value=""/></DigitalObject>
           <DigitalObject DigitalObjectCatalogID="DOC_1"><NAME id="N"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="BSTR"/><NESTED><UNKNOWN value="quoted &amp; decoded"/></NESTED></DigitalObject>
+          <DigitalObject DigitalObjectCatalogID="DOC_3"><CARDNAME_STRING value="Art card"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><ARTID value="1982"/><FRAMESTYLE value="3"/></DigitalObject>
         </CardSet>"#).unwrap()).unwrap();
         database.validate().unwrap();
         let mut first = Vec::new();
         let mut second = Vec::new();
-        write_database(&mut first, &database).unwrap();
-        write_database(&mut second, &database).unwrap();
+        write_database(&mut first, &database, &artwork).unwrap();
+        write_database(&mut second, &database, &artwork).unwrap();
         assert_eq!(first, second);
         let mut decoded = String::new();
         flate2::read::GzDecoder::new(first.as_slice())
@@ -580,34 +628,31 @@ mod tests {
         assert!(decoded.ends_with('\n'));
         assert!(!decoded.contains('\r'));
         let lines: Vec<_> = decoded.split_terminator('\n').collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), database.len());
         assert!(lines.iter().all(|line| !line.is_empty()));
         let objects: Vec<Value> = lines
             .iter()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(objects.len(), 2);
         assert_eq!(objects[0]["id"], 1);
         assert_eq!(objects[1]["id"], 2);
-        assert_eq!(
-            objects[1]["set"],
-            json!({"id":"TEST", "age":7,"kind":"future"})
-        );
-        assert_eq!(
-            objects[1]["fields"]["NAME"],
-            "Name\nline\r\"quoted\" café 🧙"
-        );
+        assert_eq!(objects[2]["id"], 3);
+        assert_eq!(objects[1]["set"], "TEST");
+        assert_eq!(objects[1]["mtgo"]["NAME"], "Name\nline\r\"quoted\" café 🧙");
         assert!(objects[0].get("source").is_none());
         assert!(objects[0].get("schema_version").is_none());
-        assert_eq!(objects[1]["fields"]["IS_FOIL"], true);
-        assert_eq!(objects[1]["fields"]["EMPTY"], "");
+        assert_eq!(objects[1]["foil"], true);
+        assert_eq!(objects[1]["mtgo"]["EMPTY"], "");
+        assert_eq!(objects[1]["mtgo"]["NESTED"]["UNKNOWN"], "quoted & decoded");
         assert_eq!(
-            objects[1]["fields"]["NESTED"]["UNKNOWN"],
-            "quoted & decoded"
-        );
-        assert_eq!(
-            objects[0]["fields"]["DIGITAL_OBJECT_TYPE_CODE_STRING"],
+            objects[0]["mtgo"]["DIGITAL_OBJECT_TYPE_CODE_STRING"],
             "BSTR"
+        );
+        assert_eq!(objects[2]["name"], "Art card");
+        assert_eq!(objects[2]["art_id"], 1982);
+        assert_eq!(
+            objects[2]["art_url"],
+            "http://mtgo.patch.daybreakgames.com/patch/mtg/live/Graphics/Cards/Pics/01982_typ_reg_sty_010.jpg"
         );
     }
 
@@ -652,13 +697,13 @@ mod tests {
     fn release_files_record_asset_digests_and_exported_count() {
         let capture = capture();
         let (mut metadata, _) = load_snapshot(&capture.path).unwrap();
-        metadata.object_count = Some(156735);
+        metadata.object_count = Some(2);
         save_metadata(&capture.path, &metadata).unwrap();
         fs::write(capture.path.join("card-data.jsonl.gz"), b"abc").unwrap();
         write_release_files(&capture.path, &metadata).unwrap();
         let checksums = fs::read_to_string(capture.path.join("SHA256SUMS")).unwrap();
         let lines: Vec<_> = checksums.lines().collect();
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         assert_eq!(
             lines[0],
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  card-data.jsonl.gz"
@@ -672,8 +717,9 @@ mod tests {
             lines[3],
             "32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f  MTGO.exe.manifest"
         );
+        assert!(lines[4].ends_with("  MTGO.exe.config"));
         let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
-        assert!(notes.contains("156735 objects; JSON Lines schema 2"));
+        assert!(notes.contains("2 objects; JSON Lines schema 3"));
         assert!(notes.contains(&metadata.source.application_manifest_url));
         assert!(notes.contains(&metadata.source.application_manifest_sha256));
         assert!(!capture.path.join("SHA256SUMS.tmp").exists());

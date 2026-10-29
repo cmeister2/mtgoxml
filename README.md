@@ -18,7 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let application = client.live()?;
     let database = client.load_card_sets(&application, ["V09"])?;
     let card = database.card(33915)?;
-    println!("Name: {:?}, foil: {}", card.name(), card.is_foil()?);
+    let friendly = card.friendly()?;
+    println!("Name: {:?}, artist: {:?}", friendly.name, friendly.artist);
     Ok(())
 }
 ```
