@@ -1,0 +1,41 @@
+[package]
+name = "mtgoxml"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Discover and resolve Magic: The Gathering Online card data from its ClickOnce deployment"
+license = "MIT"
+repository = "https://github.com/cmeister2/mtgoxml"
+readme = "README.md"
+keywords = ["mtgo", "magic", "clickonce", "manifest", "xml"]
+categories = ["games", "web-programming::http-client"]
+include = ["/src/**", "/examples/**", "/tests/**", "/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.clippy]
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
+[features]
+default = []
+http = ["dep:ureq"]
+
+[dependencies]
+clickonce = "0.1.0"
+roxmltree = "0.21.2"
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
+url = "2.5.8"
+
+[[example]]
+name = "resources"
+required-features = ["http"]
+
+[[example]]
+name = "card"
+required-features = ["http"]

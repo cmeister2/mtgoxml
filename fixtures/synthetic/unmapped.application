@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:v2="urn:schemas-microsoft-com:asm.v2" manifestVersion="1.0">
+  <assemblyIdentity name="MTGO.application" version="1.2.3.4" />
+  <v2:deployment install="true" mapFileExtensions="false" />
+  <v2:dependency>
+    <v2:dependentAssembly dependencyType="install" codebase="Application Files\MTGO_1_2_3_4\MTGO.exe.manifest" size="512">
+      <assemblyIdentity name="MTGO.exe" version="1.2.3.4" />
+    </v2:dependentAssembly>
+  </v2:dependency>
+</assembly>

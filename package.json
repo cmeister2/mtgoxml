@@ -1,0 +1,20 @@
+{
+  "name": "mtgoxml-release-tools",
+  "private": true,
+  "scripts": {
+    "test": "node --test release.config.test.mjs"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "dependencies": {
+    "conventional-changelog-conventionalcommits": "10.4.1",
+    "semantic-release": "^25.0.9"
+  },
+  "overrides": {
+    "@semantic-release/release-notes-generator": "15.0.0-beta.3"
+  },
+  "devDependencies": {
+    "@semantic-release-cargo/semantic-release-cargo": "2.4.84"
+  }
+}

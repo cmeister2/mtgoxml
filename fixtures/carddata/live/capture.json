@@ -1,0 +1,124 @@
+{
+  "captured_date": "2026-10-29",
+  "description": "Small derived regression fixtures: complete selected digital-object records and exactly their referenced lookup rows. XML was parsed and reserialized; record attributes, fields, and lookup text are preserved after XML decoding. These are not byte-for-byte copies of full publisher files.",
+  "license_notice": "Original publisher data. Rights remain with the respective owners; the crate MIT license does not relicense these fixtures.",
+  "files": [
+    {
+      "path": "client_V09.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/client_V09.xml",
+      "source_sha256": "349492af6eb78a35d5148568865fe52ea0bd0487cbc21de3f317456ce2d2de91",
+      "retained_object_ids": [
+        "DOC_33914",
+        "DOC_33915"
+      ]
+    },
+    {
+      "path": "client_10E_DO.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/client_10E_DO.xml",
+      "source_sha256": "3c7ee5f115eb10ad4b182003ba8de96c89718b83e3e8a0b66df5ebd3da3b6f87",
+      "retained_object_ids": [
+        "DOC_23961"
+      ]
+    },
+    {
+      "path": "ARTIST_NAME_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/ARTIST_NAME_STRING.xml",
+      "source_sha256": "53f164f5fe0efb908eff0943833865d59fd0ceca1c74adfbda75d2001a8cafa5",
+      "retained_lookup_ids": [
+        "ID514_442"
+      ]
+    },
+    {
+      "path": "CARDNAME_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/CARDNAME_STRING.xml",
+      "source_sha256": "f06f5e41f9bb7491e2c2d3835f32b01e3ea80eb70f709a0f28d64fec3b64e5a1",
+      "retained_lookup_ids": [
+        "ID1027_20978",
+        "ID1027_31390"
+      ]
+    },
+    {
+      "path": "CARDNAME_TOKEN.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/CARDNAME_TOKEN.xml",
+      "source_sha256": "d1496b8b9240a18c2f56705d2abfa4ecfe70a9ae2b9405c06d024bfbd981562b",
+      "retained_lookup_ids": [
+        "ID1028_20617",
+        "ID1028_30883"
+      ]
+    },
+    {
+      "path": "CARDSETNAME_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/CARDSETNAME_STRING.xml",
+      "source_sha256": "221215801f26d1b6e6e06554729d2e6c04359cf87e2bb33ff87b4f08ee5914e1",
+      "retained_lookup_ids": [
+        "ID1285_2",
+        "ID1285_389"
+      ]
+    },
+    {
+      "path": "COLOR.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/COLOR.xml",
+      "source_sha256": "62b8d260b0556d55605d6cb3a37f43853b8e00a8a56fa754504c4176a3c789a8",
+      "retained_lookup_ids": [
+        "ID1286_5"
+      ]
+    },
+    {
+      "path": "COLOR_IDENTITY.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/COLOR_IDENTITY.xml",
+      "source_sha256": "9168c1579243e63360a0f7d101a1ce1cdc66208aaaa4e30f8b81af59cdfa75cd",
+      "retained_lookup_ids": [
+        "ID1287_5"
+      ]
+    },
+    {
+      "path": "CONVERTED_MANA_COST.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/CONVERTED_MANA_COST.xml",
+      "source_sha256": "6415a7f156e833ed53e67928a70208d03b8e32a3abbca039cdfdb669c54050e2",
+      "retained_lookup_ids": [
+        "ID1291_2"
+      ]
+    },
+    {
+      "path": "FLAVORTEXT_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/FLAVORTEXT_STRING.xml",
+      "source_sha256": "2261b60bec751276b663f6a19aa9f501bbea59d48ae74cdf9d04aa65ad66eaab",
+      "retained_lookup_ids": [
+        "ID1806_23357"
+      ]
+    },
+    {
+      "path": "MANA_COST_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/MANA_COST_STRING.xml",
+      "source_sha256": "a2d745cf40f93e6a3375dae59e0c9b949f4b25dd437d54d2876e1187a0247a08",
+      "retained_lookup_ids": [
+        "ID2327_696"
+      ]
+    },
+    {
+      "path": "PROMO_LABEL_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/PROMO_LABEL_STRING.xml",
+      "source_sha256": "e83c9ae8c2606ced436c7248eab331163f9eae163d58ebd8896979739feed556",
+      "retained_lookup_ids": [
+        "ID2846_1"
+      ]
+    },
+    {
+      "path": "RARITY_STATUS.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/RARITY_STATUS.xml",
+      "source_sha256": "8e59b3337f28012068d52bf04e25b534eecf3b0531ec6d0d3d35ebbc2b5c5178",
+      "retained_lookup_ids": [
+        "ID2848_4"
+      ]
+    },
+    {
+      "path": "REAL_ORACLETEXT_STRING.xml",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/REAL_ORACLETEXT_STRING.xml",
+      "source_sha256": "2346a4ea0e5ae44cea082e2780e25a0889f2038cae6bd277a846eb808db4558f",
+      "retained_lookup_ids": [
+        "ID2849_18144",
+        "ID2849_358"
+      ]
+    }
+  ]
+}

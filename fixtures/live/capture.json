@@ -1,0 +1,19 @@
+{
+  "captured_date": "2026-10-29",
+  "purpose": "Offline regression fixtures; these describe the captured deployment, not the current service.",
+  "license_notice": "Original publisher manifests. Copyright and other rights remain with their respective owners; the crate MIT license does not relicense these third-party fixtures.",
+  "files": [
+    {
+      "path": "MTGO.application",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/MTGO.application",
+      "size_bytes": 12592,
+      "sha256": "1e88dd53cbf6357c1a89623e961386b7a03bf7f531c3615fa1568a574df8cbc2"
+    },
+    {
+      "path": "MTGO.exe.manifest",
+      "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/MTGO.exe.manifest",
+      "size_bytes": 469108,
+      "sha256": "32a32d35627ba060223ddc9ebef9eff7a4c70768bb6117f404e4aeb7e44acf7f"
+    }
+  ]
+}

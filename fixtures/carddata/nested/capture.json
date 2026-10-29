@@ -1,0 +1,10 @@
+{
+  "captured_date": "2026-10-29",
+  "description": "Complete selected digital object retaining the prototype property group. XML was parsed and reserialized; field values and structure are preserved after XML decoding.",
+  "license_notice": "Original publisher data. Rights remain with the respective owners; the crate MIT license does not relicense this derived fixture.",
+  "source_url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/CardDataSource/client_BRO.xml",
+  "source_sha256": "72cde6926ec31f5f200b712761c92bf3d5a803fb213f9b9824d04948c446f126",
+  "retained_object_ids": [
+    "DOC_104554"
+  ]
+}
