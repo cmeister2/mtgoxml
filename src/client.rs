@@ -91,6 +91,27 @@ impl Client {
         CardStyles::from_bytes_with_options(&bytes, self.client_data_options).map_err(Error::from)
     }
 
+    /// Download ordered store-product image rules from `DigitalObjectImageNames.xml`.
+    ///
+    /// This loads the supplied application's declared resource and constructs no
+    /// image URLs. The rules share [`Self::with_client_data_options`] limits.
+    /// Resource hashes are retained by the catalog but are not verified here.
+    ///
+    /// # Errors
+    /// Returns an error for a missing resource, invalid URL, failed request or
+    /// HTTP status, parsing limits, invalid XML, or unsupported matching syntax.
+    pub fn load_image_names(
+        &self,
+        application: &Application,
+    ) -> Result<crate::imagenames::DigitalObjectImageNames, Error> {
+        let bytes = self.fetch_client_data(application, "DigitalObjectImageNames.xml")?;
+        crate::imagenames::DigitalObjectImageNames::from_bytes_with_options(
+            &bytes,
+            self.client_data_options,
+        )
+        .map_err(Error::from)
+    }
+
     /// Fetch one bounded auxiliary document from the supplied application catalog.
     fn fetch_client_data(&self, application: &Application, path: &str) -> Result<Vec<u8>, Error> {
         let resource = application

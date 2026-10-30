@@ -791,3 +791,75 @@ fn card_style_loading_rejects_missing_resources_status_and_limits() {
         matches!(client(false).load_card_styles(&application), Err(Error::Http(error)) if matches!(*error, transport::Error::StatusCode(503)))
     );
 }
+
+/// Product-image rules load through catalog URL mapping and retain ordered matching.
+#[test]
+fn image_names_load_from_the_declared_resource() {
+    for mapped in [false, true] {
+        // A single explicit resource request must not trigger image or card-data downloads.
+        let server = Server::new(|path| match path {
+            "/live/version/DigitalObjectImageNames.xml"
+            | "/live/version/DigitalObjectImageNames.xml.deploy" => response(
+                "200 OK",
+                "",
+                br#"<DigitalObjectImageNamesData>
+                <Match Rule="Contains" MatchPattern="Unused" ValueFormat=""/>
+                <Match Rule="Equals" MatchPattern="Event Ticket" ValueFormat="ticket.png"/>
+                </DigitalObjectImageNamesData>"#,
+            ),
+            _ => response("404 Not Found", "", b"unexpected resource"),
+        });
+        let application = card_application(
+            &server.origin,
+            &["DigitalObjectImageNames.xml", "unrelated.xml"],
+            mapped,
+        );
+        let names = client(true).load_image_names(&application).unwrap();
+        assert_eq!(
+            names
+                .generate_image_name("Event Ticket", "ETK", 1)
+                .unwrap()
+                .as_deref(),
+            Some("ticket.png")
+        );
+        assert_eq!(
+            names
+                .generate_image_name("Unused Ticket", "ETK", 2)
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+        let suffix = if mapped { ".deploy" } else { "" };
+        assert_eq!(
+            server.requests(),
+            [format!("/live/version/DigitalObjectImageNames.xml{suffix}")]
+        );
+    }
+}
+
+/// The image-rule loader shares auxiliary response limits and rejects unsuccessful statuses.
+#[test]
+fn image_name_loading_rejects_missing_resources_status_and_limits() {
+    let server = Server::new(|_| response("200 OK", "", b"<DigitalObjectImageNamesData/>"));
+    let missing = card_application(&server.origin, &["unrelated.xml"], false);
+    assert!(
+        matches!(client(true).load_image_names(&missing), Err(Error::MissingResource(path)) if path == "DigitalObjectImageNames.xml")
+    );
+    assert!(server.requests().is_empty());
+    let application = card_application(&server.origin, &["DigitalObjectImageNames.xml"], false);
+    let limited = client(true).with_client_data_options(mtgoxml::imagenames::ParseOptions {
+        max_input_bytes: 5,
+        max_nodes: 100,
+    });
+    assert!(matches!(
+        limited.load_image_names(&application),
+        Err(Error::ClientData(
+            mtgoxml::imagenames::Error::InputTooLarge { limit: 5 }
+        ))
+    ));
+    let failed = Server::new(|_| response("404 Not Found", "", b"<DigitalObjectImageNamesData/>"));
+    let application = card_application(&failed.origin, &["DigitalObjectImageNames.xml"], false);
+    assert!(
+        matches!(client(false).load_image_names(&application), Err(Error::Http(error)) if matches!(*error, transport::Error::StatusCode(404)))
+    );
+}

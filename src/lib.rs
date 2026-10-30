@@ -8,6 +8,7 @@ mod resource;
 
 pub mod carddata;
 pub mod cardstyle;
+pub mod imagenames;
 
 #[cfg(feature = "http")]
 mod client;
