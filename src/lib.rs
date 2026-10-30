@@ -1,11 +1,14 @@
 #![doc = include_str!("../docs/usage.md")]
 
 mod artwork;
+mod dataxml;
 mod error;
 mod location;
 mod resource;
 
 pub mod carddata;
+pub mod cardstyle;
+pub mod imagenames;
 
 #[cfg(feature = "http")]
 mod client;

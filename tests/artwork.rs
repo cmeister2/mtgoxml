@@ -65,6 +65,185 @@ fn configured(root: &str, subpath: &str) -> Result<ArtworkResolver, ArtworkError
     )
 }
 
+/// Keep the normal card directory while supplying optional avatar settings verbatim.
+fn configured_with_avatars(root: &str, settings: &str) -> Result<ArtworkResolver, ArtworkError> {
+    ArtworkResolver::from_config(
+        Url::parse("https://patch.example/client/redirected/MTGO.exe.config").unwrap(),
+        format!(r#"<configuration><downloadSource><artRoot value="{root}"/><cardArtSubPath value="Cards/Pics"/>{settings}</downloadSource></configuration>"#).as_bytes(),
+    )
+}
+
+/// Cosmetic avatars and playable Vanguards share the avatar directory and inherited ARTID.
+#[test]
+fn avatar_artwork_uses_art_id_and_clone_inheritance() {
+    let application = application();
+    let mut database = application.card_database();
+    database
+        .insert(
+            &application,
+            CardDataFile::parse(
+                r#"<CardSet id="CC">
+      <DigitalObject DigitalObjectCatalogID="DOC_39677">
+        <ARTID value="1000129"/><FRAMESTYLE value="11"/><IS_VANGUARD value="1"/>
+        <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><CARDTEXTURE_NUMBER value="79354"/>
+        <REAL_ORACLETEXT_STRING value="At the beginning of your upkeep, put a charge counter on Avatar - Hijinks."/>
+      </DigitalObject>
+      <DigitalObject DigitalObjectCatalogID="DOC_39678">
+        <CLONE_ID value="39677"/><CARDTEXTURE_NUMBER value="79357"/>
+      </DigitalObject>
+      <DigitalObject DigitalObjectCatalogID="DOC_156681">
+        <FRAMESTYLE value="11"/><IS_VANGUARD/>
+        <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><REAL_ORACLETEXT_STRING value=""/>
+      </DigitalObject>
+    </CardSet>"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let resolver = ArtworkResolver::from_config(Url::parse(CONFIG_URL).unwrap(), CONFIG).unwrap();
+    assert_eq!(
+        resolver.avatar_base_url().unwrap().as_str(),
+        "http://mtgo.patch.daybreakgames.com/patch/mtg/live/Graphics/Avatars/Regular/"
+    );
+    for id in [39677, 39678] {
+        // Clone and texture IDs do not replace a nonzero inherited artwork ID.
+        assert_eq!(
+            resolver
+                .for_object(&database.object(id).unwrap())
+                .unwrap()
+                .as_str(),
+            "http://mtgo.patch.daybreakgames.com/patch/mtg/live/Graphics/Avatars/Regular/1000129_avatar.jpg"
+        );
+    }
+    assert_eq!(
+        resolver
+            .for_object(&database.object(156681).unwrap())
+            .unwrap()
+            .path(),
+        "/patch/mtg/live/Graphics/Avatars/Regular/156681c_avatar.jpg"
+    );
+}
+
+/// Missing and zero avatar art IDs use the object's own catalog ID and c suffix.
+#[test]
+fn avatar_catalog_fallback_uses_each_objects_identity() {
+    let resolver = ArtworkResolver::from_config(Url::parse(CONFIG_URL).unwrap(), CONFIG).unwrap();
+    for art in ["", r#"<ARTID value="0"/>"#] {
+        // A clone inherits avatar properties but the fallback uses its own catalog identity.
+        let application = application();
+        let mut database = application.card_database();
+        database
+            .insert(
+                &application,
+                CardDataFile::parse(&format!(
+                    r#"
+          <CardSet id="CC">
+            <DigitalObject DigitalObjectCatalogID="DOC_1">
+              {art}<IS_VANGUARD/><FRAMESTYLE value="11"/>
+              <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>
+            </DigitalObject>
+            <DigitalObject DigitalObjectCatalogID="DOC_2"><CLONE_ID value="1"/></DigitalObject>
+          </CardSet>"#
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        for id in [1, 2] {
+            assert_eq!(
+                resolver
+                    .for_object(&database.object(id).unwrap())
+                    .unwrap()
+                    .path(),
+                format!("/patch/mtg/live/Graphics/Avatars/Regular/{id:05}c_avatar.jpg")
+            );
+        }
+    }
+}
+
+/// Avatar routing preserves client placeholders and fails closed on malformed typed fields.
+#[test]
+fn avatar_lookup_rejects_ambiguous_ids_flags_and_noncard_markers() {
+    let resolver = ArtworkResolver::from_config(Url::parse(CONFIG_URL).unwrap(), CONFIG).unwrap();
+    for fields in [
+        r#"<ARTID value="-1"/><IS_VANGUARD/>"#,
+        r#"<ARTID value="2147483648"/><IS_VANGUARD/>"#,
+        r#"<ARTID value="invalid"/><IS_VANGUARD/>"#,
+        r#"<ARTID value=""/><IS_VANGUARD/>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD value="true"/>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD><INVALID/></IS_VANGUARD>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD/><MTGO_CLIENT_NON_CARD/>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD/><IS_DIGITALOBJECT value="0"/>"#,
+        r#"<ARTID value="1000129"/>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD value="0"/>"#,
+        r#"<ARTID value="1000129"/><IS_VANGUARD value="-1"/>"#,
+    ] {
+        // Frame 11 alone cannot establish avatar semantics or repair invalid source values.
+        let database = database(&format!(
+            r#"<DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><FRAMESTYLE value="11"/>{fields}"#
+        ));
+        assert!(
+            resolver.for_object(&database.object(1).unwrap()).is_none(),
+            "{fields}"
+        );
+    }
+    for flag in ["0", "-1"] {
+        // Native integer booleans treat nonpositive values as ordinary cards.
+        let database = database(&format!(
+            r#"<ARTID value="23"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><FRAMESTYLE value="3"/><IS_VANGUARD value="{flag}"/>"#
+        ));
+        assert_eq!(
+            resolver
+                .for_object(&database.object(1).unwrap())
+                .unwrap()
+                .path(),
+            "/patch/mtg/live/Graphics/Cards/Pics/00023_typ_reg_sty_010.jpg"
+        );
+    }
+}
+
+/// Optional avatar settings preserve card-only configurations and literal URL segments.
+#[test]
+fn avatar_directory_is_optional_and_resolves_relative_roots_and_queries() {
+    let card_only = configured("https://art.example/Graphics", "Cards/Pics").unwrap();
+    assert!(card_only.avatar_base_url().is_none());
+    let database = database(
+        r#"<ARTID value="23"/><IS_VANGUARD/><FRAMESTYLE value="11"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>"#,
+    );
+    assert!(card_only.for_object(&database.object(1).unwrap()).is_none());
+    let resolver = configured_with_avatars(
+        "../Graphics?token=test",
+        r#"<avatarArtSubPath value="Avatars\Regular Portraits"/>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        resolver
+            .for_object(&database.object(1).unwrap())
+            .unwrap()
+            .as_str(),
+        "https://patch.example/client/Graphics/Avatars/Regular%20Portraits/00023_avatar.jpg?token=test"
+    );
+}
+
+/// Optional avatar configuration must still be unambiguous and a relative directory.
+#[test]
+fn rejects_invalid_avatar_directories_and_qualified_values() {
+    for settings in [
+        r#"<avatarArtSubPath value="Avatars/Regular"/><avatarArtSubPath value="Other"/>"#,
+        r#"<avatarArtSubPath/>"#,
+        r#"<avatarArtSubPath value=""/>"#,
+        r#"<avatarArtSubPath xmlns:other="urn:other" other:value="Avatars/Regular"/>"#,
+        r#"<avatarArtSubPath value="/Avatars/Regular"/>"#,
+        r#"<avatarArtSubPath value="../Avatars/Regular"/>"#,
+        r#"<avatarArtSubPath value="Avatars//Regular"/>"#,
+        r#"<avatarArtSubPath value="https://other.example"/>"#,
+    ] {
+        assert!(
+            configured_with_avatars("https://art.example/Graphics", settings).is_err(),
+            "{settings}"
+        );
+    }
+}
+
 /// The known Mystical Tutor artwork uses ARTID rather than the foil's texture number.
 #[test]
 fn modern_artwork_uses_inherited_art_id_and_ignores_texture_number() {
@@ -288,9 +467,9 @@ fn split_properties_override_the_frame_and_undefined_frames_use_post_m15() {
     }
 }
 
-/// Explicit noncard markers and artless frames do not invent an artwork URL.
+/// Explicit noncard markers, artless frames, and unconfigured avatars have no artwork.
 #[test]
-fn noncards_artless_frames_and_vanguard_flags_have_no_artwork() {
+fn noncards_artless_frames_and_unconfigured_avatars_have_no_artwork() {
     for fields in [
         r#"<FRAMESTYLE value="3"/><MTGO_CLIENT_NON_CARD/>"#,
         r#"<FRAMESTYLE value="3"/><MTGO_CLIENT_NON_CARD value="1"/>"#,

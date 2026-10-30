@@ -35,6 +35,8 @@ Choose how much to load:
 | `Client::load_card_sets(&application, ["V09"])` | Selected set fragments and their referenced lookup tables |
 | `Client::load_card_database(&application)` | Every CardDataSource component; this can exceed 100 MiB |
 | `Client::load_artwork(&application)` | The client configuration used to resolve artwork URLs |
+| `Client::load_card_styles(&application)` | Named layout declarations from `CardStyle.xml` |
+| `Client::load_image_names(&application)` | Ordered store-product filename rules from `DigitalObjectImageNames.xml` |
 
 Set codes are case insensitive. Selected loading includes both `client_CODE.xml`
 and `client_CODE_DO.xml` when present, and follows references inside nested

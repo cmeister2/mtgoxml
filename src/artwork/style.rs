@@ -13,7 +13,7 @@ use crate::ResolvedObject;
 // 0b315e11a92a96585a8d5c85cac268b2ecd6a68df6d07459139de6063f449527.
 // Frame styles include the client's computed property-based overrides.
 
-/// Select the primary image suffix, excluding avatars and client placeholders.
+/// Select the primary image suffix, including avatars and excluding client placeholders.
 pub(super) fn primary_suffix(object: &ResolvedObject<'_>) -> Option<&'static str> {
     use FrameStyle::*;
 
@@ -22,16 +22,19 @@ pub(super) fn primary_suffix(object: &ResolvedObject<'_>) -> Option<&'static str
         return None;
     }
     let frame = frame_style(object)?;
-    if frame == VanguardAvatar
-        || boolean(object, "IS_VANGUARD")?
-        || boolean(object, "MTGO_CLIENT_NON_CARD")?
-    {
+    if boolean(object, "MTGO_CLIENT_NON_CARD")? {
+        return None;
+    }
+    if frame.is_token() {
+        return frame.token_suffix(object, colors(object)?);
+    }
+    if boolean(object, "IS_VANGUARD")? {
+        return Some("_avatar");
+    }
+    if frame == VanguardAvatar {
         return None;
     }
     let color = colors(object)?;
-    if frame.is_token() {
-        return frame.token_suffix(object, color);
-    }
     if boolean(object, "FLIP_CARD")? {
         return Some(
             if matches!(

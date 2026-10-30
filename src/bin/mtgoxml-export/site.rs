@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{CHECKSUM_ASSETS, Result, Snapshot, digest_file, load_snapshot, read_bounded};
+use super::{Result, Snapshot, checksum_assets, digest_file, load_snapshot, read_bounded};
 
 /// Version of the browser manifest, index, shard wrapper, and relationship links.
 const BROWSER_SCHEMA_VERSION: u32 = 1;
@@ -170,8 +170,8 @@ impl Drop for StagingDirectory {
 /// nonempty output directory, or filesystem and serialization failures.
 pub(super) fn build(input: &Path, output: &Path) -> Result<()> {
     let staging = StagingDirectory::create(output)?;
-    let checksums = verify_checksums(input)?;
     let (snapshot, _) = load_snapshot(input)?;
+    let checksums = verify_checksums(input, &snapshot)?;
     verify_completion(&snapshot, &checksums)?;
     let records = read_catalog(input, &snapshot)?;
     let (index, shards) = partition(records)?;
@@ -228,15 +228,16 @@ pub(super) fn build(input: &Path, output: &Path) -> Result<()> {
 }
 
 /// Validate exactly the expected release assets without accepting arbitrary paths.
-fn verify_checksums(input: &Path) -> Result<BTreeMap<String, String>> {
+fn verify_checksums(input: &Path, snapshot: &Snapshot) -> Result<BTreeMap<String, String>> {
     let bytes = read_bounded(File::open(input.join("SHA256SUMS"))?)?;
+    let assets: Vec<_> = checksum_assets(snapshot).collect();
     let mut expected = BTreeMap::new();
     for line in std::str::from_utf8(&bytes)?.lines() {
         // Restrict filenames before opening any paths supplied by a checksum line.
         let (digest, name) = line.split_once("  ").ok_or("invalid SHA256SUMS line")?;
         if digest.len() != 64
             || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || !CHECKSUM_ASSETS.contains(&name)
+            || !assets.contains(&name)
         {
             return Err(format!("invalid SHA256SUMS entry: {name}").into());
         }
@@ -247,7 +248,7 @@ fn verify_checksums(input: &Path) -> Result<BTreeMap<String, String>> {
             return Err(format!("duplicate SHA256SUMS entry: {name}").into());
         }
     }
-    for name in CHECKSUM_ASSETS {
+    for name in assets {
         // Missing entries fail instead of weakening verification to a partial asset list.
         let expected_digest = expected
             .get(name)
@@ -270,6 +271,30 @@ fn verify_completion(snapshot: &Snapshot, checksums: &BTreeMap<String, String>) 
         .ok_or("site requires completed artwork provenance")?;
     if artwork.config_sha256 != checksums["MTGO.exe.config"] {
         return Err("artwork provenance does not match MTGO.exe.config".into());
+    }
+    if let Some(client_data) = &snapshot.client_data {
+        // Auxiliary release data is optional, but a declared bundle must be coherent.
+        if client_data.schema_version != 1
+            || client_data.unresolved_style_count > client_data.card_styles.record_count
+        {
+            return Err("invalid client-data schema version or unresolved style count".into());
+        }
+        for (name, source) in [
+            ("CardStyle.xml", &client_data.card_styles),
+            ("DigitalObjectImageNames.xml", &client_data.image_names),
+        ] {
+            // Raw XML provenance must identify the same bytes verified from the release.
+            if source.source_sha256 != checksums[name] {
+                return Err(format!("client-data provenance does not match {name}").into());
+            }
+            let url = mtgoxml::Url::parse(&source.source_url)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || url.fragment().is_some()
+            {
+                return Err(format!("invalid client-data source URL for {name}").into());
+            }
+        }
     }
     Ok(())
 }
@@ -447,6 +472,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auxiliary::{Metadata, ResourceSource};
     use crate::{ArtworkSource, LIVE_DEPLOYMENT_URL, save_metadata, snapshot, write_release_files};
     use flate2::{Compression, GzBuilder};
     use mtgoxml::Deployment;
@@ -515,6 +541,50 @@ mod tests {
             write_release_files(&input, &metadata).unwrap();
             input
         }
+
+        /// Extend a legacy capture with small, checksummed auxiliary release assets.
+        fn capture_with_client_data(&self, records: &[Value]) -> (PathBuf, Snapshot) {
+            let input = self.capture(records);
+            let (mut metadata, _) = load_snapshot(&input).unwrap();
+            for (name, bytes) in [
+                ("CardStyle.xml", br#"<AnimCache><AnimCardStyle Name="Unresolved" CloneFrom="Missing"/></AnimCache>"#.as_slice()),
+                ("DigitalObjectImageNames.xml", br#"<DigitalObjectImageNamesData><Match Rule="Equals" MatchPattern="Ticket" ValueFormat="ticket.png"/></DigitalObjectImageNamesData>"#.as_slice()),
+            ] {
+                // Standalone XML samples keep the test independent of mutable client data.
+                fs::write(input.join(name), bytes).unwrap();
+            }
+            for (name, value) in [
+                ("card-styles.jsonl.gz", json!({"name":"Unresolved"})),
+                (
+                    "digital-object-image-names.jsonl.gz",
+                    json!({"rule":"Equals","match_pattern":"Ticket","value_format":"ticket.png"}),
+                ),
+            ] {
+                // Site generation verifies these archive bytes without consuming their records.
+                let mut gzip = GzBuilder::new()
+                    .mtime(0)
+                    .write(File::create(input.join(name)).unwrap(), Compression::new(6));
+                serde_json::to_writer(&mut gzip, &value).unwrap();
+                writeln!(gzip).unwrap();
+                gzip.finish().unwrap();
+            }
+            metadata.client_data = Some(Metadata {
+                schema_version: 1,
+                card_styles: ResourceSource {
+                    source_url: "https://patch.example.test/CardStyle.xml".into(),
+                    source_sha256: digest_file(&input.join("CardStyle.xml")).unwrap(),
+                    record_count: 1,
+                },
+                image_names: ResourceSource {
+                    source_url: "https://patch.example.test/DigitalObjectImageNames.xml".into(),
+                    source_sha256: digest_file(&input.join("DigitalObjectImageNames.xml")).unwrap(),
+                    record_count: 1,
+                },
+                unresolved_style_count: 1,
+            });
+            save_capture_checksums(&input, &metadata);
+            (input, metadata)
+        }
     }
 
     impl Drop for TestDirectory {
@@ -535,6 +605,21 @@ mod tests {
     /// Read JSON output for exact structure and source-value comparisons.
     fn json_file(path: &Path) -> Value {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Rewrite checksums after intentional metadata changes to isolate semantic validation.
+    fn save_capture_checksums(input: &Path, metadata: &Snapshot) {
+        save_metadata(input, metadata).unwrap();
+        let mut checksums = String::new();
+        for name in checksum_assets(metadata) {
+            writeln!(
+                checksums,
+                "{}  {name}",
+                digest_file(&input.join(name)).unwrap()
+            )
+            .unwrap();
+        }
+        fs::write(input.join("SHA256SUMS"), checksums).unwrap();
     }
 
     /// Resolve a name's generated shard using the public manifest paths.
@@ -560,6 +645,22 @@ mod tests {
             record(4, "Booster", "BSTR", 16),
         ];
         let input = directory.capture(&records);
+        let (metadata, _) = load_snapshot(&input).unwrap();
+        assert!(metadata.client_data.is_none());
+        assert_eq!(
+            verify_checksums(&input, &metadata)
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "MTGO.application",
+                "MTGO.exe.config",
+                "MTGO.exe.manifest",
+                "card-data.jsonl.gz",
+                "snapshot.json"
+            ]
+        );
         let first = directory.path.join("first");
         let second = directory.path.join("second");
         build(&input, &first).unwrap();
@@ -602,6 +703,138 @@ mod tests {
         }
         assert!(first.join("index.html").is_file());
         assert!(first.join("search-worker.js").is_file());
+    }
+
+    /// Optional auxiliary assets are verified while card records and browser schema stay intact.
+    #[test]
+    fn verifies_client_data_assets_without_changing_browser_records() {
+        let directory = TestDirectory::new();
+        let original = record(1, "Card", "CARD", 10);
+        let (input, metadata) = directory.capture_with_client_data(std::slice::from_ref(&original));
+        let checksums = verify_checksums(&input, &metadata).unwrap();
+        for name in crate::auxiliary::CHECKSUM_ASSETS {
+            assert_eq!(checksums[name], digest_file(&input.join(name)).unwrap());
+        }
+        let output = directory.path.join("site");
+        build(&input, &output).unwrap();
+        let manifest = json_file(&output.join("data/current.json"));
+        assert_eq!(manifest["schema_version"], BROWSER_SCHEMA_VERSION);
+        assert_eq!(
+            output_shard(&output, &manifest, "Card")["objects"]["Card"][0],
+            original
+        );
+    }
+
+    /// Every declared auxiliary asset and checksum entry is required before publication.
+    #[test]
+    fn rejects_corrupted_missing_or_unlisted_client_data_assets() {
+        for name in crate::auxiliary::CHECKSUM_ASSETS {
+            // Exercise all four files rather than only the first new checksum entry.
+            for variant in ["corrupted", "missing file", "missing checksum"] {
+                // Each capture starts complete so one semantic failure is isolated.
+                let directory = TestDirectory::new();
+                let (input, _) =
+                    directory.capture_with_client_data(&[record(1, "Card", "CARD", 10)]);
+                match variant {
+                    "corrupted" => fs::write(input.join(name), b"changed asset").unwrap(),
+                    "missing file" => fs::remove_file(input.join(name)).unwrap(),
+                    _ => {
+                        // Retain every other valid checksum while omitting this required entry.
+                        let listing = fs::read_to_string(input.join("SHA256SUMS")).unwrap();
+                        let omitted = format!("  {name}");
+                        let mut updated = String::new();
+                        for line in listing.lines().filter(|line| !line.ends_with(&omitted)) {
+                            writeln!(updated, "{line}").unwrap();
+                        }
+                        fs::write(input.join("SHA256SUMS"), updated).unwrap();
+                    }
+                }
+                let output = directory.path.join("site");
+                assert!(build(&input, &output).is_err(), "{name}: {variant}");
+                assert!(!output.exists());
+            }
+        }
+        let directory = TestDirectory::new();
+        let (input, metadata) =
+            directory.capture_with_client_data(&[record(1, "Card", "CARD", 10)]);
+        let mut listing = fs::read_to_string(input.join("SHA256SUMS")).unwrap();
+        listing.push_str(&format!("{}  unknown-client-data.xml\n", "0".repeat(64)));
+        fs::write(input.join("SHA256SUMS"), listing).unwrap();
+        assert!(
+            verify_checksums(&input, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid SHA256SUMS entry")
+        );
+    }
+
+    /// Auxiliary checksum entries cannot silently extend a legacy export's asset contract.
+    #[test]
+    fn rejects_auxiliary_checksums_without_declared_client_data() {
+        let directory = TestDirectory::new();
+        let (input, mut metadata) =
+            directory.capture_with_client_data(&[record(1, "Card", "CARD", 10)]);
+        metadata.client_data = None;
+        save_metadata(&input, &metadata).unwrap();
+        let listing = fs::read_to_string(input.join("SHA256SUMS")).unwrap();
+        let listing = listing
+            .lines()
+            .map(|line| {
+                if line.ends_with("  snapshot.json") {
+                    format!(
+                        "{}  snapshot.json\n",
+                        digest_file(&input.join("snapshot.json")).unwrap()
+                    )
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect::<String>();
+        fs::write(input.join("SHA256SUMS"), listing).unwrap();
+        let output = directory.path.join("site");
+        assert!(
+            build(&input, &output)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid SHA256SUMS entry")
+        );
+        assert!(!output.exists());
+    }
+
+    /// Correct checksums do not repair unsupported metadata or mismatched raw XML provenance.
+    #[test]
+    fn rejects_invalid_client_data_metadata_and_provenance() {
+        for variant in [
+            "schema",
+            "count",
+            "style source",
+            "image source",
+            "source URL",
+            "fragment",
+        ] {
+            // Rehash the edited metadata to reach semantic validation after file verification.
+            let directory = TestDirectory::new();
+            let (input, mut metadata) =
+                directory.capture_with_client_data(&[record(1, "Card", "CARD", 10)]);
+            let client_data = metadata.client_data.as_mut().unwrap();
+            match variant {
+                "schema" => client_data.schema_version = 2,
+                "count" => {
+                    client_data.unresolved_style_count = client_data.card_styles.record_count + 1
+                }
+                "style source" => client_data.card_styles.source_sha256 = "0".repeat(64),
+                "image source" => client_data.image_names.source_sha256 = "0".repeat(64),
+                "source URL" => {
+                    client_data.card_styles.source_url =
+                        "ftp://patch.example.test/CardStyle.xml".into()
+                }
+                _ => client_data.image_names.source_url.push_str("#fragment"),
+            }
+            save_capture_checksums(&input, &metadata);
+            let output = directory.path.join("site");
+            assert!(build(&input, &output).is_err(), "{variant}");
+            assert!(!output.exists());
+        }
     }
 
     /// Texture references must not accidentally resolve to equal-valued catalog IDs.
