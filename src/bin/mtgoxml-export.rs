@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
+/// Verified style and product-image projections released alongside the card catalog.
+#[path = "mtgoxml-export/auxiliary.rs"]
+mod auxiliary;
 /// Offline browser-bundle generation from a completed data release.
 #[path = "mtgoxml-export/site.rs"]
 mod site;
@@ -81,6 +84,9 @@ struct Snapshot {
     /// Configuration provenance, present after successful artwork discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     artwork: Option<ArtworkSource>,
+    /// Optional, independently versioned layout and product-image projections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_data: Option<auxiliary::Metadata>,
 }
 
 /// Dispatch manifest discovery, data export, or an offline browser build.
@@ -136,7 +142,10 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
 
 /// Download the pinned components and publish the local gzip only after full validation.
 fn export(directory: &Path) -> Result<()> {
-    for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"] {
+    for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"]
+        .into_iter()
+        .chain(auxiliary::CHECKSUM_ASSETS)
+    {
         // Clear all completed outputs so a failed retry cannot retain stale release files.
         match fs::remove_file(directory.join(name)) {
             Ok(()) => {}
@@ -148,11 +157,15 @@ fn export(directory: &Path) -> Result<()> {
     snapshot.object_count = None;
     snapshot.sets.clear();
     snapshot.artwork = None;
+    snapshot.client_data = None;
     save_metadata(directory, &snapshot)?;
     let agent = agent();
     let (artwork, config_bytes, artwork_source) = load_artwork(&application, &agent)?;
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
     let sets = database.set_metadata()?;
+    let client_data = auxiliary::export(directory, &application, &database, |resource| {
+        fetch(&agent, &resource.url)
+    })?;
 
     // An interrupted export leaves only a temporary gzip, never a completed asset.
     let temporary = directory.join("card-data.jsonl.gz.tmp");
@@ -162,6 +175,7 @@ fn export(directory: &Path) -> Result<()> {
     snapshot.object_count = Some(database.len());
     snapshot.sets = sets;
     snapshot.artwork = Some(artwork_source);
+    snapshot.client_data = Some(client_data);
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
     println!("Exported {} objects", database.len());
@@ -250,6 +264,7 @@ fn snapshot(application: &Application, bytes: &[u8]) -> Result<Snapshot> {
         object_count: None,
         sets: BTreeMap::new(),
         artwork: None,
+        client_data: None,
     })
 }
 
@@ -444,6 +459,16 @@ fn digest_file(path: &Path) -> Result<String> {
     Ok(hex)
 }
 
+/// Select the complete asset contract without changing older published snapshots.
+fn checksum_assets(snapshot: &Snapshot) -> impl Iterator<Item = &'static str> {
+    let extras: &'static [&'static str] = if snapshot.client_data.is_some() {
+        &auxiliary::CHECKSUM_ASSETS
+    } else {
+        &[]
+    };
+    CHECKSUM_ASSETS.into_iter().chain(extras.iter().copied())
+}
+
 /// Generate publication metadata only after all complete export assets exist.
 fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
     let count = snapshot
@@ -451,7 +476,7 @@ fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
         .filter(|count| *count > 0)
         .ok_or("cannot generate release files before a nonempty export completes")?;
     let mut checksums = String::new();
-    for name in CHECKSUM_ASSETS {
+    for name in checksum_assets(snapshot) {
         // Reject missing or empty assets before installing either release metadata file.
         let path = directory.join(name);
         if !path.is_file() || path.metadata()?.len() == 0 {
@@ -459,13 +484,28 @@ fn write_release_files(directory: &Path, snapshot: &Snapshot) -> Result<()> {
         }
         writeln!(checksums, "{}  {name}", digest_file(&path)?)?;
     }
-    let notes = format!(
+    let mut notes = format!(
         "Resolved MTGO catalog: {count} objects; JSON Lines schema {SCHEMA_VERSION}.\n\n\
          Application manifest: {}\n\n\
          Manifest SHA-256: `{}`\n\n\
          Includes compressed JSON Lines, source manifests, artwork configuration, metadata, and SHA256SUMS.\n",
         snapshot.source.application_manifest_url, snapshot.source.application_manifest_sha256,
     );
+    if let Some(client_data) = &snapshot.client_data {
+        // Keep unresolved declarations visible rather than counting them as resolved layouts.
+        if client_data.schema_version != 1
+            || client_data.unresolved_style_count > client_data.card_styles.record_count
+        {
+            return Err("invalid auxiliary export metadata".into());
+        }
+        write!(
+            notes,
+            "\nClient data JSON Lines schema 1: {} card styles ({} unresolved); {} store-image records.\n",
+            client_data.card_styles.record_count,
+            client_data.unresolved_style_count,
+            client_data.image_names.record_count
+        )?;
+    }
     fs::write(directory.join("SHA256SUMS.tmp"), checksums)?;
     fs::write(directory.join("release-notes.md.tmp"), notes)?;
     fs::rename(
@@ -702,6 +742,41 @@ mod tests {
         assert!(write_release_files(&capture.path, &metadata).is_err());
         assert!(!capture.path.join("SHA256SUMS").exists());
         assert!(!capture.path.join("release-notes.md").exists());
+    }
+
+    /// Declared auxiliary data makes every new source and projection mandatory for publication.
+    #[test]
+    fn release_files_require_and_hash_declared_client_data() {
+        let capture = capture();
+        let (mut metadata, _) = load_snapshot(&capture.path).unwrap();
+        metadata.object_count = Some(1);
+        let source = auxiliary::ResourceSource {
+            source_url: "https://patch.example.test/CardStyle.xml".into(),
+            source_sha256: "a".repeat(64),
+            record_count: 2,
+        };
+        metadata.client_data = Some(auxiliary::Metadata {
+            schema_version: 1,
+            card_styles: source.clone(),
+            image_names: source,
+            unresolved_style_count: 1,
+        });
+        save_metadata(&capture.path, &metadata).unwrap();
+        fs::write(capture.path.join("card-data.jsonl.gz"), b"card projection").unwrap();
+        assert!(write_release_files(&capture.path, &metadata).is_err());
+        assert!(!capture.path.join("SHA256SUMS").exists());
+        assert!(!capture.path.join("release-notes.md").exists());
+        for name in auxiliary::CHECKSUM_ASSETS {
+            fs::write(capture.path.join(name), name.as_bytes()).unwrap();
+        }
+        write_release_files(&capture.path, &metadata).unwrap();
+        let checksums = fs::read_to_string(capture.path.join("SHA256SUMS")).unwrap();
+        for name in checksum_assets(&metadata) {
+            let expected = format!("{}  {name}", digest_file(&capture.path.join(name)).unwrap());
+            assert!(checksums.lines().any(|line| line == expected));
+        }
+        let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
+        assert!(notes.contains("2 card styles (1 unresolved); 2 store-image records"));
     }
 
     /// Checksums cover all published source and data assets, including completed metadata.

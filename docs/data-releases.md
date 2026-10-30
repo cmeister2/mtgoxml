@@ -20,15 +20,19 @@ replace the repository's latest crate release. New snapshots contain:
 | Asset | Contents |
 | --- | --- |
 | `card-data.jsonl.gz` | Gzip-compressed JSON Lines, one resolved digital object per line |
+| `card-styles.jsonl.gz` | Named styles with resolved inheritance or an explicit resolution error |
+| `digital-object-image-names.jsonl.gz` | Resolved store-image filenames keyed by catalog ID |
 | `snapshot.json` | Source provenance, schema version, object count, shared set metadata, and artwork configuration |
 | `MTGO.application` | Original deployment-manifest bytes |
 | `MTGO.exe.manifest` | Original application-manifest bytes |
 | `MTGO.exe.config` | Original client configuration used for artwork URLs |
+| `CardStyle.xml` | Original layout declarations used for the style export |
+| `DigitalObjectImageNames.xml` | Original ordered rules used for store-image filenames |
 | `SHA256SUMS` | SHA-256 checksums for the other assets |
 
 The exporter pins the downloaded manifests before fetching components. It checks
-declared resource sizes and supported content digests for components and artwork
-configuration, parses the components,
+declared resource sizes and supported content digests for components, artwork
+configuration, and both auxiliary XML files, parses the components,
 and resolves every object before producing the export. Failed downloads,
 integrity checks, parsing, or resolution prevent publication. The workflow uses
 `softprops/action-gh-release` to stage assets in a draft and publish after every
@@ -92,11 +96,53 @@ by `set`, or by the optional `source_set` when the declaring fragment differs fr
 the resolved set code. The `artwork` object records `config_url`, `config_sha256`,
 and the resolved image `base_url`. Release tags still use only the MTGO version.
 
+New exports also contain an optional `client_data` object describing the auxiliary
+JSONL format version, source URLs, raw XML SHA-256 digests, record counts, and
+unresolved style count. Older schema-3 snapshots remain valid without these assets.
+
 The format supports streaming through tools such as `jq` without reading a
 single enclosing array. For example, `gzip -dc card-data.jsonl.gz | head -n 1`
 prints the first object.
 
-### Earlier snapshots
+## Client data JSON Lines schema version 1
+
+These two additional gzip files follow the same UTF-8, LF-terminated JSONL
+conventions. Their schema version is `snapshot.json`'s
+`client_data.schema_version`, independently of the card catalog's schema 3.
+All source and generated assets appear in `SHA256SUMS`.
+
+`card-styles.jsonl.gz` contains every style in exact-name order. A resolved row
+has `name`, `status: "resolved"`, and `properties` from the inherited style.
+Properties preserve opaque asset/font/color names, explicit empty values, and
+the geometry described by [CardStyles](card-styles.md). For example, with
+properties abbreviated:
+
+```jsonl
+{"name":"Base","status":"resolved","properties":{"frame":"CardFrame Default"}}
+{"name":"Child","status":"unresolved","declaration":{"name":"Child","clone_from":"Missing","properties":{}},"error":{"kind":"missing_reference","target_kind":"style","key":"Missing"}}
+```
+
+Missing bases and cycles produce unresolved rows with the original declaration
+and a typed error. Cycle errors use `kind: "reference_cycle"` and a `chain` array.
+They remain visible in the export and its unresolved count. Other parsing or
+export failures prevent publication.
+
+`digital-object-image-names.jsonl.gz` contains one row per store-image object,
+in numeric catalog-ID order:
+
+```jsonl
+{"id":1,"image_name":"MTGOTHER_event_1_sty_001.png"}
+```
+
+The client selects this pipeline by the presence of `IS_DIGITALOBJECT`, including
+an explicit zero value. Join rows to `card-data.jsonl.gz` by `id`. Filenames use
+the object's declaring set, inherited display name, and the ordered rules in
+[DigitalObjectImageNames](image-names.md). `image_name: null` means no rule
+matched; `""` means the winning rule deliberately produced an empty name. These
+values remain distinct. The file contains filenames rather than image URLs;
+directory selection and availability fallback remain with the consumer.
+
+## Earlier snapshots
 
 Schema version 2 used the same JSONL filename, with records containing `id`, a
 repeated source `set` object, and the original property map in `fields`. Schema

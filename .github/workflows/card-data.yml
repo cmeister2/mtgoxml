@@ -54,8 +54,12 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             snapshot/card-data.jsonl.gz
+            snapshot/card-styles.jsonl.gz
+            snapshot/digital-object-image-names.jsonl.gz
             snapshot/snapshot.json
             snapshot/MTGO.application
             snapshot/MTGO.exe.manifest
             snapshot/MTGO.exe.config
+            snapshot/CardStyle.xml
+            snapshot/DigitalObjectImageNames.xml
             snapshot/SHA256SUMS
