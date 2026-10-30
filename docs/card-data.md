@@ -113,8 +113,9 @@ for property mappings and migration details.
 
 [`crate::ArtworkResolver`] reads the artwork CDN root from client configuration.
 Its `for_object` method resolves primary artwork URLs from supported objects,
-including inherited art IDs, without downloading images. Enable `http` to use
-`Client::load_artwork` to fetch that configuration separately from card data.
+including inherited art IDs and avatar/Vanguard image locations, without
+downloading images. Enable `http` to use `Client::load_artwork` to fetch that
+configuration separately from card data.
 
 ## Parsing limits and provenance
 

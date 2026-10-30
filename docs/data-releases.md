@@ -77,8 +77,11 @@ notation or plain Oracle text.
 
 `art_url` follows the client's primary artwork selection using the inherited art ID,
 effective frame style, and card properties. Some styles provide an artwork crop;
-others include a frame. Texture and catalog IDs are separate from the art ID.
-Tokens, play aids, products, avatars, and artless styles have no generated URL.
+others include a frame. Avatars and playable Vanguard cards use the configured
+avatar directory with an `_avatar.jpg` suffix. Missing or zero avatar art IDs
+fall back to the object's catalog ID and `c_avatar.jpg`. Texture IDs remain
+separate from art IDs. Tokens, play aids, products, and artless styles have no
+generated URL.
 Constructing a URL does not request the image or guarantee its availability.
 
 `snapshot.json` records `schema_version: 3`, source URLs and digests, the release
