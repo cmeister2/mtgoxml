@@ -85,13 +85,28 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  browser:
+    name: Card browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:web
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:browser
+
   release:
     name: Release
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [evenflow, rust, msrv, coverage, release-tools]
+    needs: [evenflow, rust, msrv, coverage, release-tools, browser]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,7 +143,7 @@ jobs:
   success:
     name: Success
     if: always()
-    needs: [evenflow, rust, msrv, coverage, release-tools, release]
+    needs: [evenflow, rust, msrv, coverage, release-tools, browser, release]
     runs-on: ubuntu-latest
     steps:
       - name: Require every applicable job to pass
@@ -138,6 +153,7 @@ jobs:
           MSRV_RESULT: ${{ needs.msrv.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RELEASE_TOOLS_RESULT: ${{ needs.release-tools.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
           RELEASE_EXPECTED: >-
             ${{ github.event_name == 'push' ||
@@ -148,6 +164,7 @@ jobs:
           test "$MSRV_RESULT" = success
           test "$COVERAGE_RESULT" = success
           test "$RELEASE_TOOLS_RESULT" = success
+          test "$BROWSER_RESULT" = success
           if [ "$RELEASE_EXPECTED" = true ]; then
             test "$RELEASE_RESULT" = success
           else

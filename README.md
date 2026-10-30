@@ -31,4 +31,5 @@ Build the API docs with `cargo doc --all-features --no-deps --open`.
 - [Usage and resource discovery](docs/usage.md)
 - [Card-data parsing and resolution](docs/card-data.md)
 - [Downloadable JSONL snapshots](docs/data-releases.md)
+- [Card browser and local preview](docs/browser-delivery.md)
 - [Development and releases](docs/development.md)

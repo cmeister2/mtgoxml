@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>MTGO card data</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mana-font@1.18.0/css/mana.min.css">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>MTGO card data</h1>
+    <p id="catalog-version">Loading catalog…</p>
+
+    <form id="search-form" role="search" autocomplete="off">
+      <label for="card-search">Card name</label>
+      <div class="search-field">
+        <input id="card-search" type="search" placeholder="For example, Mystical Tutor"
+          role="combobox" aria-autocomplete="list" aria-controls="search-results"
+          aria-expanded="false" disabled>
+        <ul id="search-results" role="listbox" aria-label="Matching names" hidden></ul>
+      </div>
+      <label class="checkbox-label">
+        <input id="include-other" type="checkbox" disabled>
+        Include tokens and other objects
+      </label>
+    </form>
+
+    <p id="status" role="status" aria-live="polite">Loading the name index…</p>
+    <button id="retry" type="button" hidden>Reload catalog</button>
+
+    <section id="card-details" aria-labelledby="card-name" hidden>
+      <label for="printing">Printing</label>
+      <select id="printing"></select>
+      <article>
+        <h2 id="card-name"></h2>
+        <div class="card-content">
+          <div class="card-text">
+            <dl id="card-fields"></dl>
+            <h3>Rules text</h3>
+            <p id="rules-text" class="source-text"></p>
+            <section id="flavor-section" hidden>
+              <h3>Flavor text</h3>
+              <p id="flavor-text" class="source-text"></p>
+            </section>
+            <div id="related" hidden>
+              <h3>Related cards</h3>
+              <div id="related-links"></div>
+            </div>
+          </div>
+          <figure id="artwork" hidden>
+            <img id="card-art" alt="" width="320" decoding="async">
+            <figcaption>
+              <span id="art-status">Artwork</span>
+              · <a id="art-link" target="_blank" rel="noopener noreferrer">Open artwork</a>
+            </figcaption>
+          </figure>
+        </div>
+        <p id="no-art" hidden>No artwork URL is available for this object.</p>
+        <p><a id="share-link">Link to this printing</a></p>
+        <details>
+          <summary>Full MTGO data</summary>
+          <pre id="raw-data"></pre>
+        </details>
+      </article>
+    </section>
+
+    <footer>
+      <a href="https://github.com/cmeister2/mtgoxml">Source and data downloads</a>
+    </footer>
+  </main>
+</body>
+</html>

@@ -3,3 +3,6 @@
 /lcov.info
 /coverage/
 *.tmp
+/_site/
+/playwright-report/
+/test-results/

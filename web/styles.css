@@ -1,0 +1,58 @@
+:root {
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+  color-scheme: light dark;
+}
+
+body { margin: 0; }
+main { max-width: 58rem; margin: 2rem auto; padding: 0 1rem; }
+h1 { margin-bottom: 0; font-size: 1.6rem; }
+h2 { font-size: 1.4rem; }
+h3 { font-size: 1rem; margin-bottom: .3rem; }
+#catalog-version, footer, figcaption { font-size: .9rem; }
+label:not(.checkbox-label) { display: block; font-weight: 600; }
+input[type="search"], select { box-sizing: border-box; width: 100%; padding: .5rem; font: inherit; }
+input[type="search"] { margin-top: .25rem; }
+.search-field { position: relative; max-width: 36rem; }
+.checkbox-label { display: block; margin-top: .6rem; }
+#search-results {
+  position: absolute;
+  z-index: 1;
+  width: 100%;
+  max-height: 19rem;
+  box-sizing: border-box;
+  margin: 0;
+  padding: .2rem 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid GrayText;
+  background: Canvas;
+}
+#search-results [role="option"] { padding: .35rem .6rem; cursor: pointer; }
+#search-results [aria-selected="true"], #search-results [role="option"]:hover {
+  color: HighlightText;
+  background: Highlight;
+}
+#status { min-height: 1.5rem; }
+#printing { max-width: 36rem; margin-top: .25rem; }
+.card-content { display: flex; align-items: flex-start; gap: 2rem; }
+.card-text { flex: 1; min-width: 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin-top: 0; }
+dt { font-weight: 600; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.source-text { white-space: pre-wrap; margin-top: .3rem; }
+.ms { font-style: normal; font-weight: normal; margin-inline: .05em; }
+figure { margin: 0; max-width: 40%; }
+img { display: block; max-width: 100%; height: auto; }
+figcaption { margin-top: .4rem; }
+#related-links { display: flex; gap: .5rem; flex-wrap: wrap; }
+pre { padding: .75rem; overflow: auto; border: 1px solid GrayText; font-size: .85rem; }
+summary { cursor: pointer; }
+footer { margin-top: 3rem; border-top: 1px solid GrayText; padding-top: 1rem; }
+[hidden] { display: none !important; }
+
+@media (max-width: 40rem) {
+  main { margin-top: 1rem; }
+  .card-content { flex-direction: column; gap: 1rem; }
+  figure { max-width: 100%; }
+}

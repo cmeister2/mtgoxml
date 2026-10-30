@@ -1,0 +1,80 @@
+name: Card browser
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pages.yml
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - web/**
+  workflow_run:
+    workflows: [MTGO card data]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: card-browser-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build browser from published MTGO data
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Find the MTGO export
+        id: mtgo_export
+        uses: cardinalby/git-get-release-action@2ab178299eecb253f820dcf2cce11f62be1178f7 # v1
+        with:
+          releaseNameRegEx: '^MTGO card data [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+          draft: 'false'
+          prerelease: 'false'
+          searchLimit: '1000'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Download the selected snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MTGO_EXPORT_TAG: ${{ steps.mtgo_export.outputs.tag_name }}
+        run: gh release download "$MTGO_EXPORT_TAG" --repo "$GITHUB_REPOSITORY" --dir snapshot
+      - name: Build and verify browser data
+        run: >-
+          cargo run --locked --release --bin mtgoxml-export --features snapshot --
+          site snapshot _site
+      - name: Upload the complete site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy card browser
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Deploy the complete site
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
