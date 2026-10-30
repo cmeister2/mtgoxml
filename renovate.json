@@ -1,5 +1,9 @@
 {
   "extends": ["github>cmeister2/renovate"],
+  "cargo": {
+    "constraints": { "rust": "1.85" },
+    "constraintsFiltering": "strict"
+  },
   "customManagers": [
     {
       "customType": "regex",

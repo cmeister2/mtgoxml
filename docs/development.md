@@ -17,6 +17,9 @@ coverage, documentation, and release-tooling checks. The Evenflow GitHub Action
 must pass before release and the required `Success` check. Renovate tracks the
 pinned action and binary versions.
 
+Keep the Cargo Rust constraint in `renovate.json` aligned with `Cargo.toml`'s
+MSRV. Renovate uses it to filter dependency releases and select its Rust toolchain.
+
 ## Documentation
 
 The README is the quick start. `docs/usage.md` and `docs/card-data.md` are included
