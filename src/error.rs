@@ -33,6 +33,8 @@ pub enum Error {
     CardData(crate::carddata::Error),
     /// Artwork configuration could not be parsed or resolved.
     Artwork(crate::ArtworkError),
+    /// Auxiliary client XML could not be decoded, parsed, or resolved.
+    ClientData(crate::cardstyle::Error),
     /// A required application resource is absent from the manifest.
     MissingResource(String),
     /// A requested set or required lookup table is absent from the manifest.
@@ -66,6 +68,7 @@ impl fmt::Display for Error {
             Self::DuplicateResource(path) => write!(formatter, "duplicate resource path: {path}"),
             Self::CardData(error) => write!(formatter, "invalid CardDataSource data: {error}"),
             Self::Artwork(error) => write!(formatter, "invalid artwork configuration: {error}"),
+            Self::ClientData(error) => write!(formatter, "invalid auxiliary client data: {error}"),
             Self::MissingResource(path) => {
                 write!(formatter, "application resource not found: {path}")
             }
@@ -85,6 +88,7 @@ impl std::error::Error for Error {
             Self::Url(error) => Some(error),
             Self::CardData(error) => Some(error),
             Self::Artwork(error) => Some(error),
+            Self::ClientData(error) => Some(error),
             #[cfg(feature = "http")]
             Self::Http(error) => Some(error.as_ref()),
             _ => None,
@@ -101,6 +105,12 @@ impl From<crate::carddata::Error> for Error {
 impl From<crate::ArtworkError> for Error {
     fn from(error: crate::ArtworkError) -> Self {
         Self::Artwork(error)
+    }
+}
+
+impl From<crate::cardstyle::Error> for Error {
+    fn from(error: crate::cardstyle::Error) -> Self {
+        Self::ClientData(error)
     }
 }
 

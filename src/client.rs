@@ -6,6 +6,7 @@ use std::time::Duration;
 use clickonce::{Manifest, ParseOptions};
 use ureq::ResponseExt;
 
+use crate::cardstyle::CardStyles;
 use crate::{
     Application, ArtworkResolver, Deployment, Error, LIVE_DEPLOYMENT_URL, Resource, ResourceKind,
     Url, carddata, location,
@@ -24,6 +25,8 @@ pub struct Client {
     options: ParseOptions,
     /// Bounds applied while reading and parsing each CardDataSource component.
     card_data_options: carddata::ParseOptions,
+    /// Bounds for auxiliary XML documents such as `CardStyle.xml`.
+    client_data_options: crate::cardstyle::ParseOptions,
 }
 
 impl Default for Client {
@@ -51,6 +54,7 @@ impl Client {
             agent,
             options: ParseOptions::default(),
             card_data_options: carddata::ParseOptions::default(),
+            client_data_options: crate::cardstyle::ParseOptions::default(),
         }
     }
 
@@ -64,6 +68,44 @@ impl Client {
     pub fn with_card_data_options(mut self, options: carddata::ParseOptions) -> Self {
         self.card_data_options = options;
         self
+    }
+
+    /// Customize encoded-byte, decoded-byte, and node limits for auxiliary XML.
+    pub fn with_client_data_options(mut self, options: crate::cardstyle::ParseOptions) -> Self {
+        self.client_data_options = options;
+        self
+    }
+
+    /// Download the captured application's `CardStyle.xml` declarations.
+    ///
+    /// Style inheritance is resolved explicitly through `CardStyles::resolve`;
+    /// missing bases in the source do not prevent parsing other styles. Asset
+    /// names remain opaque references. Resource hashes are retained by the
+    /// application catalog but are not verified by this convenience loader.
+    ///
+    /// # Errors
+    /// Returns an error for a missing resource, invalid URL, failed request or
+    /// HTTP status, parsing limits, unsupported encoding, or invalid XML data.
+    pub fn load_card_styles(&self, application: &Application) -> Result<CardStyles, Error> {
+        let bytes = self.fetch_client_data(application, "CardStyle.xml")?;
+        CardStyles::from_bytes_with_options(&bytes, self.client_data_options).map_err(Error::from)
+    }
+
+    /// Fetch one bounded auxiliary document from the supplied application catalog.
+    fn fetch_client_data(&self, application: &Application, path: &str) -> Result<Vec<u8>, Error> {
+        let resource = application
+            .resource(path)
+            .filter(|resource| resource.kind == ResourceKind::File)
+            .ok_or_else(|| Error::MissingResource(path.into()))?;
+        location::check_url(&resource.url)?;
+        let mut response = self.agent.get(resource.url.as_str()).call()?;
+        if !response.status().is_success() {
+            return Err(ureq::Error::StatusCode(response.status().as_u16()).into());
+        }
+        location::check_url(&Url::parse(&response.get_uri().to_string())?)?;
+        self.client_data_options
+            .read(response.body_mut().as_reader())
+            .map_err(Error::from)
     }
 
     /// Load the application's `MTGO.exe.config` artwork download configuration.

@@ -730,3 +730,64 @@ fn artwork_configuration_streaming_response_is_bounded() {
     ));
     assert_eq!(server.requests(), ["/live/version/MTGO.exe.config"]);
 }
+
+/// Auxiliary loaders use catalog mapping and follow redirects without fetching images.
+#[test]
+fn card_styles_load_from_the_declared_resource() {
+    for mapped in [false, true] {
+        // The response uses the real style file's declared Latin-1 encoding.
+        let server = Server::new(|path| {
+            match path {
+            "/live/version/CardStyle.xml" | "/live/version/CardStyle.xml.deploy" => response(
+                "302 Found", "Location: /styles.xml\r\n", b"",
+            ),
+            "/styles.xml" => response("200 OK", "", br#"<?xml version="1.0" encoding="ISO-8859-1"?>
+                <AnimCache><AnimCardStyle Name="Child" CloneFrom="Base"/>
+                <AnimCardStyle Name="Base"><Frame>Native Frame</Frame></AnimCardStyle></AnimCache>"#),
+            _ => response("404 Not Found", "", b"unexpected resource"),
+        }
+        });
+        let application =
+            card_application(&server.origin, &["CardStyle.xml", "unrelated.xml"], mapped);
+        let styles = client(true).load_card_styles(&application).unwrap();
+        assert_eq!(
+            styles.resolve("Child").unwrap().properties.frame.as_deref(),
+            Some("Native Frame")
+        );
+        let suffix = if mapped { ".deploy" } else { "" };
+        assert_eq!(
+            server.requests(),
+            [
+                format!("/live/version/CardStyle.xml{suffix}"),
+                "/styles.xml".to_owned()
+            ]
+        );
+    }
+}
+
+/// Missing files, HTTP failures, and configured byte budgets fail before returning a catalog.
+#[test]
+fn card_style_loading_rejects_missing_resources_status_and_limits() {
+    let server = Server::new(|_| response("200 OK", "", b"<AnimCache/>"));
+    let missing = card_application(&server.origin, &["unrelated.xml"], false);
+    assert!(
+        matches!(client(true).load_card_styles(&missing), Err(Error::MissingResource(path)) if path == "CardStyle.xml")
+    );
+    assert!(server.requests().is_empty());
+    let application = card_application(&server.origin, &["CardStyle.xml"], false);
+    let limited = client(true).with_client_data_options(mtgoxml::cardstyle::ParseOptions {
+        max_input_bytes: 5,
+        max_nodes: 100,
+    });
+    assert!(matches!(
+        limited.load_card_styles(&application),
+        Err(Error::ClientData(
+            mtgoxml::cardstyle::Error::InputTooLarge { limit: 5 }
+        ))
+    ));
+    let failed = Server::new(|_| response("503 Service Unavailable", "", b"<AnimCache/>"));
+    let application = card_application(&failed.origin, &["CardStyle.xml"], false);
+    assert!(
+        matches!(client(false).load_card_styles(&application), Err(Error::Http(error)) if matches!(*error, transport::Error::StatusCode(503)))
+    );
+}
