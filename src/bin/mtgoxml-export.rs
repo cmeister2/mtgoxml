@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
+/// Offline browser-bundle generation from a completed data release.
+#[path = "mtgoxml-export/site.rs"]
+mod site;
+
 /// Version of the published JSON representation.
 const SCHEMA_VERSION: u32 = 3;
 /// Bound for a raw manifest or card-data component before parsing.
@@ -79,22 +83,30 @@ struct Snapshot {
     artwork: Option<ArtworkSource>,
 }
 
-/// Dispatch manifest discovery or export of the previously captured manifest.
+/// Dispatch manifest discovery, data export, or an offline browser build.
 fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
-    let command = arguments.next().ok_or("expected probe or export")?;
+    let command = arguments.next().ok_or("expected probe, export, or site")?;
     let directory = PathBuf::from(arguments.next().ok_or("expected output directory")?);
     let source = arguments.next();
     if arguments.next().is_some() {
         return Err(
-            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR".into(),
+            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR | mtgoxml-export site SNAPSHOT_DIR OUTPUT_DIR".into(),
         );
     }
     match command.as_str() {
         "probe" => probe(&directory, source.as_deref().unwrap_or(LIVE_DEPLOYMENT_URL)),
         "export" if source.is_none() => export(&directory),
         "export" => Err("export accepts only the captured snapshot directory".into()),
-        _ => Err("expected probe or export".into()),
+        "site" => site::build(
+            &directory,
+            Path::new(
+                source
+                    .as_deref()
+                    .ok_or("site requires an output directory")?,
+            ),
+        ),
+        _ => Err("expected probe, export, or site".into()),
     }
 }
 

@@ -9,7 +9,7 @@ repository = "https://github.com/cmeister2/mtgoxml"
 readme = "README.md"
 keywords = ["mtgo", "magic", "clickonce", "manifest", "xml"]
 categories = ["games", "web-programming::http-client"]
-include = ["/src/**", "/examples/**", "/tests/**", "/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
+include = ["/src/**", "/web/*.html", "/web/*.js", "/web/*.css", "/examples/**", "/tests/**", "/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
 
 [package.metadata.docs.rs]
 all-features = true
