@@ -75,10 +75,10 @@ values remain strings, presence flags serialize as `true`, and groups as objects
 Mana and rules text retain MTGO's formatting; they are not converted to Scryfall
 notation or plain Oracle text.
 
-`art_url` is the canonical JPEG artwork crop derived from the client configuration
-and inherited art ID. It is separate from the texture and catalog IDs, and does
-not include a card frame. Cards and card sub-objects use this convention; tokens,
-play aids, products, and avatars use other conventions and have no generated URL.
+`art_url` follows the client's primary artwork selection using the inherited art ID,
+effective frame style, and card properties. Some styles provide an artwork crop;
+others include a frame. Texture and catalog IDs are separate from the art ID.
+Tokens, play aids, products, avatars, and artless styles have no generated URL.
 Constructing a URL does not request the image or guarantee its availability.
 
 `snapshot.json` records `schema_version: 3`, source URLs and digests, the release

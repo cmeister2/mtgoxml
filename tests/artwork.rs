@@ -23,12 +23,38 @@ fn application() -> Application {
 
 /// Build a complete one-object database using literal fields supplied by a test.
 fn database(fields: &str) -> CardDatabase {
+    database_in_set("TEST", fields)
+}
+
+/// Declare a source set independently of any card-set display-name property.
+fn database_in_set(set: &str, fields: &str) -> CardDatabase {
     let application = application();
     let mut database = application.card_database();
     database.insert(&application, CardDataFile::parse(&format!(r#"
-      <CardSet id="TEST"><DigitalObject DigitalObjectCatalogID="DOC_1">{fields}</DigitalObject></CardSet>
+      <CardSet id="{set}"><DigitalObject DigitalObjectCatalogID="DOC_1">{fields}</DigitalObject></CardSet>
     "#)).unwrap()).unwrap();
     database
+}
+
+/// Resolve a synthetic card with a small art ID through the public artwork API.
+fn card_art_path(set: &str, fields: &str) -> Option<String> {
+    let resolver = configured("https://art.example/Graphics", "Cards/Pics").unwrap();
+    let database = database_in_set(
+        set,
+        &format!(r#"<ARTID value="23"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>{fields}"#),
+    );
+    resolver
+        .for_object(&database.object(1).unwrap())
+        .map(|url| url.path().to_owned())
+}
+
+/// Check a client-selected filename without probing the CDN or relying on its contents.
+fn assert_art_suffix(set: &str, fields: &str, suffix: &str) {
+    assert_eq!(
+        card_art_path(set, fields),
+        Some(format!("/Graphics/Cards/Pics/00023{suffix}.jpg")),
+        "source set {set}, fields {fields}"
+    );
 }
 
 /// Parse a compact test configuration with caller-selected roots.
@@ -41,7 +67,7 @@ fn configured(root: &str, subpath: &str) -> Result<ArtworkResolver, ArtworkError
 
 /// The known Mystical Tutor artwork uses ARTID rather than the foil's texture number.
 #[test]
-fn canonical_artwork_uses_inherited_art_id_and_ignores_texture_number() {
+fn modern_artwork_uses_inherited_art_id_and_ignores_texture_number() {
     let application = application();
     let mut database = application.card_database();
     database
@@ -79,20 +105,39 @@ fn canonical_artwork_uses_inherited_art_id_and_ignores_texture_number() {
     );
 }
 
-/// Canonical crop naming is independent of the source's modern frame-style code.
+/// The classic Blue Elemental Blast and its foil clone use the client's classic crop.
 #[test]
-fn modern_frames_and_sub_cards_use_canonical_crop() {
+fn classic_artwork_and_foil_clone_use_the_client_selected_suffix() {
+    let application = application();
+    let mut database = application.card_database();
+    database
+        .insert(
+            &application,
+            CardDataFile::parse(
+                r#"<CardSet id="1E">
+      <DigitalObject DigitalObjectCatalogID="DOC_357">
+        <ARTID value="23"/><FRAMESTYLE value="1"/><COLOR value="COLOR_BLUE"/>
+        <DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/><CARDTEXTURE_NUMBER value="714"/>
+      </DigitalObject>
+      <DigitalObject DigitalObjectCatalogID="DOC_358">
+        <CLONE_ID value="357"/><IS_FOIL/><CARDTEXTURE_NUMBER value="717"/>
+      </DigitalObject>
+    </CardSet>"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
     let resolver = configured("https://art.example/Graphics", "Cards/Pics").unwrap();
-    let database = database(
-        r#"<ARTID value="431903"/><FRAMESTYLE value="111"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>"#,
-    );
-    assert_eq!(
-        resolver
-            .for_object(&database.object(1).unwrap())
-            .unwrap()
-            .as_str(),
-        "https://art.example/Graphics/Cards/Pics/431903_typ_reg_sty_010.jpg"
-    );
+    for id in [357, 358] {
+        // Inherited artwork uses the base frame, not a texture-number or foil variant.
+        assert_eq!(
+            resolver
+                .for_object(&database.object(id).unwrap())
+                .unwrap()
+                .as_str(),
+            "https://art.example/Graphics/Cards/Pics/00023_typ_reg_sty_001.jpg"
+        );
+    }
     let database = self::database(
         r#"<ARTID value="25533"/><FRAMESTYLE value="1"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="SUBC"/>"#,
     );
@@ -101,8 +146,208 @@ fn modern_frames_and_sub_cards_use_canonical_crop() {
             .for_object(&database.object(1).unwrap())
             .unwrap()
             .as_str(),
-        "https://art.example/Graphics/Cards/Pics/25533_typ_reg_sty_010.jpg"
+        "https://art.example/Graphics/Cards/Pics/25533_typ_reg_sty_001.jpg"
     );
+}
+
+/// Distinct frame families select distinct client asset names for the same art ID.
+#[test]
+fn frame_families_select_their_own_artwork_variants() {
+    for (frame, suffix) in [
+        (3, "_typ_reg_sty_010"),
+        (31, "_typ_reg_sty_010"),
+        (5, "_typ_reg_sty_050"),
+        (7, "_typ_reg_sty_020"),
+        (9, "_typ_reg_sty_010"),
+        (10, "_typ_planeswk_sty_040"),
+        (13, "_typ_reg_sty_050"),
+        (36, "_typ_old_sty_050"),
+        (53, "_typ_reg_sty_050"),
+        (55, "_typ_reg_sty_030"),
+        (76, "_typ_reg_sty_050"),
+        (164, "_typ_dsr_sty_010"),
+        (165, "_typ_mfg_sty_030"),
+        (174, "_typ_otj_sty_010"),
+        (187, "_typ_blb_wl_sty_010"),
+        (190, "_typ_dsk_dee_sty_010"),
+        (207, "_type_inr_hrvst_planeswk_sty_050"),
+    ] {
+        // Expected families are independent examples of the client's selector branches.
+        assert_art_suffix("TEST", &format!(r#"<FRAMESTYLE value="{frame}"/>"#), suffix);
+    }
+}
+
+/// The classic dual-land exception uses the declaring set, not a resolved display alias.
+#[test]
+fn classic_dual_land_sort_exception_uses_the_source_set() {
+    let frame = r#"<FRAMESTYLE value="2"/>"#;
+    assert_art_suffix("TEST", frame, "_typ_reg_sty_001");
+    assert_art_suffix("Sort", frame, "_typ_reg_sty_010");
+    assert_art_suffix(
+        "TEST",
+        &format!(r#"{frame}<CARDSETNAME_STRING value="Sort"/>"#),
+        "_typ_reg_sty_001",
+    );
+    assert_art_suffix(
+        "Sort",
+        &format!(r#"{frame}<CARDSETNAME_STRING value="TEST"/>"#),
+        "_typ_reg_sty_010",
+    );
+}
+
+/// Colorless nonartifacts select the wider extended-art crop; artifact and land flags opt out.
+#[test]
+fn color_and_boolean_properties_select_conditional_artwork() {
+    let frame = r#"<FRAMESTYLE value="62"/><COLOR value="COLOR_COLORLESS"/>"#;
+    assert_art_suffix("TEST", frame, "_typ_reg_sty_035");
+    for (property, suffix) in [
+        (r#"<IS_ARTIFACT/>"#, "_typ_reg_sty_030"),
+        (r#"<IS_ARTIFACT value="1"/>"#, "_typ_reg_sty_030"),
+        (r#"<IS_ARTIFACT value="2"/>"#, "_typ_reg_sty_030"),
+        (r#"<IS_ARTIFACT value="0"/>"#, "_typ_reg_sty_035"),
+        (r#"<IS_LAND/>"#, "_typ_reg_sty_030"),
+        (r#"<IS_LAND value="0"/>"#, "_typ_reg_sty_035"),
+    ] {
+        // Presence and positive integer flags are true, while explicit zero stays false.
+        assert_art_suffix("TEST", &format!("{frame}{property}"), suffix);
+    }
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="62"/><COLOR value="COLOR_BLUE"/>"#,
+        "_typ_reg_sty_030",
+    );
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="80"/><COLOR value="COLOR_COLORLESS"/>"#,
+        "_typ_reg_sty_050",
+    );
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="163"/><COLOR value="COLOR_COLORLESS"/>"#,
+        "_typ_case_sty_050",
+    );
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="163"/><COLOR value="COLOR_BLUE"/>"#,
+        "_typ_case_sty_010",
+    );
+}
+
+/// Flip artwork depends on the client's exact color category and a true flip flag.
+#[test]
+fn flip_artwork_preserves_color_and_flag_semantics() {
+    for color in ["COLOR_WHITE", "COLOR_BLUE", "COLOR_BLACK", "COLOR_GREEN"] {
+        // Red, colorless, and multicolor are deliberately outside this client branch.
+        assert_art_suffix(
+            "TEST",
+            &format!(r#"<FRAMESTYLE value="3"/><COLOR value="{color}"/><FLIP_CARD/>"#),
+            "_typ_flip_sty_013",
+        );
+    }
+    for color in ["COLOR_RED", "COLOR_COLORLESS", "COLOR_WHITE|COLOR_BLUE"] {
+        assert_art_suffix(
+            "TEST",
+            &format!(r#"<FRAMESTYLE value="3"/><COLOR value="{color}"/><FLIP_CARD/>"#),
+            "_typ_reg_sty_010",
+        );
+    }
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="3"/><COLOR value="COLOR_BLUE"/><FLIP_CARD value="1"/>"#,
+        "_typ_flip_sty_013",
+    );
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="3"/><COLOR value="COLOR_BLUE"/><FLIP_CARD value="0"/>"#,
+        "_typ_reg_sty_010",
+    );
+}
+
+/// Presence-based split metadata overrides the declared frame even when its value is zero.
+#[test]
+fn split_properties_override_the_frame_and_undefined_frames_use_post_m15() {
+    for property in [
+        r#"<FUSE/>"#,
+        r#"<FUSE value="0"/>"#,
+        r#"<SPLITCARD0 value="0"/>"#,
+    ] {
+        // The client tests presence here rather than interpreting these as booleans.
+        assert_art_suffix(
+            "TEST",
+            &format!(r#"<FRAMESTYLE value="1"/>{property}"#),
+            "_typ_reg_sty_010",
+        );
+    }
+    for fields in [
+        "",
+        r#"<FRAMESTYLE value="0"/>"#,
+        r#"<FRAMESTYLE value="38"/>"#,
+        r#"<FRAMESTYLE value="9999"/>"#,
+    ] {
+        assert_art_suffix("TEST", fields, "_typ_reg_sty_010");
+    }
+}
+
+/// Explicit noncard markers and artless frames do not invent an artwork URL.
+#[test]
+fn noncards_artless_frames_and_vanguard_flags_have_no_artwork() {
+    for fields in [
+        r#"<FRAMESTYLE value="3"/><MTGO_CLIENT_NON_CARD/>"#,
+        r#"<FRAMESTYLE value="3"/><MTGO_CLIENT_NON_CARD value="1"/>"#,
+        r#"<FRAMESTYLE value="90"/>"#,
+        r#"<FRAMESTYLE value="3"/><IS_VANGUARD/>"#,
+        r#"<FRAMESTYLE value="3"/><IS_VANGUARD value="1"/>"#,
+        r#"<FRAMESTYLE value="3"/><IS_DIGITALOBJECT/>"#,
+        r#"<FRAMESTYLE value="3"/><IS_DIGITALOBJECT value="0"/>"#,
+    ] {
+        // A valid art ID cannot override client properties which suppress card artwork.
+        assert!(card_art_path("TEST", fields).is_none(), "{fields}");
+    }
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="1"/><MTGO_CLIENT_NON_CARD value="0"/>"#,
+        "_typ_reg_sty_001",
+    );
+    assert_art_suffix(
+        "TEST",
+        r#"<FRAMESTYLE value="3"/><IS_VANGUARD value="0"/>"#,
+        "_typ_reg_sty_010",
+    );
+}
+
+/// Malformed properties suppress a derived URL instead of guessing a client value.
+#[test]
+fn malformed_selection_properties_have_no_artwork() {
+    for fields in [
+        r#"<FRAMESTYLE value="80"/><IS_ARTIFACT value="true"/>"#,
+        r#"<FRAMESTYLE value="80"/><IS_LAND><INVALID value="1"/></IS_LAND>"#,
+        r#"<FRAMESTYLE value="80"/><COLOR value="COLOR_FUTURE"/>"#,
+        r#"<FRAMESTYLE value="not-a-number"/>"#,
+    ] {
+        // These values cannot select a reliable filename through the client's typed properties.
+        assert!(card_art_path("TEST", fields).is_none(), "{fields}");
+    }
+}
+
+/// Dungeon text is trimmed and includes room rules before token art is selected.
+#[test]
+fn dungeon_room_text_affects_token_artwork() {
+    let frame = r#"<FRAMESTYLE value="32"/><REAL_ORACLETEXT_STRING value="  "/>"#;
+    for (extra, suffix) in [
+        ("", "_typ_tokwtb_sty_011"),
+        ("<IS_DUNGEON/>", "_typ_tokntb_sty_012"),
+        (
+            r#"<IS_DUNGEON/><TRACKER_STATE_LIST0><TRACKER_STATE_RULES_TEXT_STRING value="Room ability"/></TRACKER_STATE_LIST0>"#,
+            "_typ_tokwtb_sty_011",
+        ),
+        (
+            r#"<IS_DUNGEON/><TRACKER_STATE_LIST0><TRACKER_STATE_RULES_TEXT_STRING value="  "/></TRACKER_STATE_LIST0>"#,
+            "_typ_tokntb_sty_012",
+        ),
+    ] {
+        // Whitespace-only dungeon text differs from a token's untrimmed rules string.
+        assert_art_suffix("TEST", &format!("{frame}{extra}"), suffix);
+    }
 }
 
 /// Unsupported object kinds and known avatar frames do not advertise a normal-card URL.
@@ -140,6 +385,7 @@ fn artwork_ids_are_positive_bounded_decimal_integers() {
         " 1982",
         "1.5",
         "1/2",
+        "2147483648",
         "18446744073709551616",
     ] {
         // Reject malformed IDs before formatting a URL or interpreting any path syntax.
