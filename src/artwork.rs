@@ -1,4 +1,9 @@
-//! Canonical artwork-crop locations from the application's download configuration.
+//! Client artwork locations from the application's download configuration.
+
+mod color;
+mod frame;
+mod properties;
+mod style;
 
 use std::fmt;
 
@@ -63,13 +68,12 @@ impl std::error::Error for ArtworkError {
     }
 }
 
-/// Resolve canonical JPEG artwork crops using the application's configured CDN.
+/// Resolve primary artwork using the application's configured CDN and frame rules.
 ///
-/// This resolves artwork only, without the card frame, name, or rules text. The
-/// canonical `typ_reg_sty_010` crop is independent of a card's frame style; it
-/// has been observed for classic, modern, showcase, prototype, and full-art
-/// cards. Unknown or unavailable CDN files are still possible: constructing a
-/// URL performs no request and does not guarantee that the image exists.
+/// The effective frame style and card properties select the same primary image
+/// filename as the MTGO client. Some styles use a crop, while others include a
+/// frame. Constructing a URL performs no request and does not guarantee that
+/// the image exists.
 ///
 /// Tokens, play aids, products, and avatars use other image conventions and are
 /// not resolved by this type. Card sub-objects use the normal artwork scheme.
@@ -160,35 +164,36 @@ impl ArtworkResolver {
         &self.base_url
     }
 
-    /// Construct the canonical artwork-crop location for a card or card sub-object.
+    /// Construct the client's primary artwork location for a card or card sub-object.
     ///
-    /// Uses the resolved positive decimal `ARTID`, including clone inheritance,
-    /// and pads it to at least five digits. `CARDTEXTURE_NUMBER` is a distinct
+    /// Uses the resolved positive decimal `ARTID` within the client's signed
+    /// 32-bit range, including clone inheritance, and pads it to at least five
+    /// digits. `CARDTEXTURE_NUMBER` is a distinct
     /// engine identifier and does not participate in artwork locations.
     ///
-    /// Returns `None` for missing, malformed, zero, or overflowing artwork IDs,
-    /// object types other than `CARD` or `SUBC`, and frame-style 11 avatars.
-    /// Other frame styles do not change this canonical crop location. The
-    /// returned URL is not checked for image availability.
+    /// Uses frame-style overrides, color, and effective card properties to select
+    /// the image suffix. Returns `None` for missing, malformed, zero, or
+    /// overflowing artwork IDs, unsupported object types, avatars, artless
+    /// styles, or malformed properties needed for image selection. The returned
+    /// URL is not checked for image availability.
     pub fn for_object(&self, object: &ResolvedObject<'_>) -> Option<Url> {
-        if !matches!(object.object_type(), Some("CARD" | "SUBC"))
-            || object
-                .text("FRAMESTYLE")
-                .and_then(|value| value.parse::<u32>().ok())
-                == Some(11)
-        {
+        if !matches!(object.object_type(), Some("CARD" | "SUBC")) {
             return None;
         }
         let raw_id = object.text("ARTID")?;
         if raw_id.is_empty() || !raw_id.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        let art_id = raw_id.parse::<u64>().ok().filter(|id| *id > 0)?;
+        let art_id = raw_id
+            .parse::<u64>()
+            .ok()
+            .filter(|id| (1..=i32::MAX as u64).contains(id))?;
+        let suffix = style::primary_suffix(object)?;
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .ok()?
             .pop_if_empty()
-            .push(&format!("{art_id:05}_typ_reg_sty_010.jpg"));
+            .push(&format!("{art_id:05}{suffix}.jpg"));
         Some(url)
     }
 }

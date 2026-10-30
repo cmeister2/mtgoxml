@@ -47,14 +47,14 @@ struct Source {
     application_manifest_sha256: String,
 }
 
-/// Verified configuration used to construct canonical artwork URLs.
+/// Verified configuration used to construct the client's primary artwork URLs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ArtworkSource {
     /// Final URL from which the declared client configuration was fetched.
     config_url: String,
     /// SHA-256 of the original configuration bytes included in this release.
     config_sha256: String,
-    /// Configured canonical artwork directory, including a trailing slash.
+    /// Configured artwork directory, including a trailing slash.
     base_url: String,
 }
 

@@ -112,7 +112,7 @@ JSON representation, independently of HTTP support. See the repository's
 for property mappings and migration details.
 
 [`crate::ArtworkResolver`] reads the artwork CDN root from client configuration.
-Its `for_object` method resolves canonical art-crop URLs from supported objects,
+Its `for_object` method resolves primary artwork URLs from supported objects,
 including inherited art IDs, without downloading images. Enable `http` to use
 `Client::load_artwork` to fetch that configuration separately from card data.
 

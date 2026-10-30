@@ -1,6 +1,6 @@
 {
-  "captured_date": "2026-10-29",
-  "purpose": "Evidence for the canonical normal-card artwork URL convention, not a promise of future CDN availability.",
+  "captured_date": "2026-10-30",
+  "purpose": "Source provenance for primary artwork filename selection.",
   "fixture": {
     "path": "download-source.config",
     "kind": "synthetic minimal configuration using observed download roots",
@@ -9,30 +9,57 @@
     "original_sha256": "eef45b8cf068d38a0fe64072f0e15103665866d566debbb07b26053c23314b4e",
     "verification": "Downloaded original bytes matched the captured application manifest's declared SHA-1 and byte size."
   },
-  "url_template": "https://mtgo.patch.daybreakgames.com/patch/mtg/live/Graphics/Cards/Pics/{ARTID padded to at least 5 digits}_typ_reg_sty_010.jpg",
-  "positive_samples": [
-    {"catalog_id": 33915, "name": "Mystical Tutor", "art_id": 1982, "frame_style": 3, "status": 200, "content_type": "image/jpeg", "size_bytes": 113899, "width": 256, "height": 188},
-    {"catalog_id": 31463, "name": "Fire", "art_id": 31073, "frame_style": 31, "status": 200, "content_type": "image/jpeg", "size_bytes": 20391, "width": 256, "height": 188},
-    {"catalog_id": 104554, "name": "Woodcaller Automaton", "art_id": 431903, "frame_style": 111, "status": 200, "content_type": "image/jpeg", "size_bytes": 65989, "width": 256, "height": 187},
-    {"catalog_id": 84782, "name": "Lucille", "art_id": 416944, "frame_style": 85, "status": 200, "content_type": "image/jpeg", "size_bytes": 19651, "width": 256, "height": 187},
-    {"catalog_id": 111514, "name": "Frodo, Determined Hero", "art_id": 438400, "frame_style": 143, "status": 200, "content_type": "image/jpeg", "size_bytes": 58754, "width": 256, "height": 187},
-    {"catalog_id": 79871, "name": "Temple of Enlightenment", "art_id": 413770, "frame_style": 66, "status": 200, "content_type": "image/jpeg", "size_bytes": 894908, "width": 256, "height": 187},
-    {"catalog_id": 145246, "name": "Brought Back", "art_id": 458105, "frame_style": 240, "status": 200, "content_type": "image/jpeg", "size_bytes": 119269, "width": 639, "height": 467},
-    {"catalog_id": 58788, "name": "Plains", "art_id": 123755, "frame_style": 48, "status": 200, "content_type": "image/jpeg", "size_bytes": 80535, "width": 256, "height": 188},
-    {"catalog_id": 79624, "name": "Plains", "art_id": 410629, "frame_style": 69, "status": 200, "content_type": "image/jpeg", "size_bytes": 38338, "width": 256, "height": 187},
-    {"catalog_id": 2, "name": "Swamp", "art_id": 2074, "frame_style": 3, "status": 200, "content_type": "image/jpeg", "size_bytes": 41401, "width": 256, "height": 188},
-    {"name": "Malice", "art_id": 25533, "object_type": "SUBC", "status": 200, "content_type": "image/jpeg", "size_bytes": 101866, "width": 269, "height": 188}
+  "application_version": "3.4.159.4708",
+  "rule_sources": [
+    {
+      "url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/WotC.MtGO.Client.Model.Core.dll",
+      "sha256": "0b315e11a92a96585a8d5c85cac268b2ecd6a68df6d07459139de6063f449527",
+      "methods": [
+        "CardDefinition.GetArtSuffix",
+        "DigitalMagicObject.GetFrameStyle",
+        "VisualResourceManager.GetCardResource",
+        "VisualResourceManager.GetArtAssetFileName"
+      ]
+    },
+    {
+      "url": "http://mtgo.patch.daybreakgames.com/patch/mtg/live/client/3.4.159.4708.20261014120111/WotC.MtGO.Client.Model.Reference.dll",
+      "sha256": "7eaf26ad5549e5a71ae02a2d9089eb5d641fe32551ebaf501a6c064e28ccea5e",
+      "methods": [
+        "CardFrameStyleHelpers.IsToken",
+        "CardFrameStyleHelpers.IsPlaneswalker",
+        "CardFrameStyleHelpers.UseArtAsFrame"
+      ]
+    }
   ],
-  "unsupported_samples": [
-    {"name": "Wood", "art_id": 279, "object_type": "TOKN", "status": 404},
-    {"name": "Day", "art_id": 420388, "object_type": "PLAD", "status": 404},
-    {"catalog_id": 9, "name": "Avatar - Serra Angel", "art_id": 124294, "object_type": "CARD", "frame_style": 11, "status": 404},
-    {"catalog_id": 23961, "name": "Tenth Edition Booster", "object_type": "BSTR", "art_id": null, "status": "not requested because no ARTID is declared"}
-  ],
-  "notes": [
-    "Images are artwork crops, not full card renderings; dimensions vary between assets.",
-    "Canonical crop requests do not depend on the card's FRAMESTYLE. The old 001 crop and frame-specific variants are not used by the resolver.",
-    "Known unsupported object kinds and avatar frame 11 are excluded rather than receiving a normal-card URL.",
-    "No third-party image bytes are included in the fixture."
+  "filename_template": "{ARTID padded to at least 5 digits}{client-selected suffix}.jpg",
+  "examples": [
+    {
+      "catalog_id": 357,
+      "name": "Blue Elemental Blast",
+      "art_id": 23,
+      "frame_style": "1",
+      "filename": "00023_typ_reg_sty_001.jpg"
+    },
+    {
+      "catalog_id": 33915,
+      "name": "Mystical Tutor",
+      "art_id": 1982,
+      "frame_style": "3",
+      "filename": "01982_typ_reg_sty_010.jpg"
+    },
+    {
+      "catalog_id": 79871,
+      "name": "Temple of Enlightenment",
+      "art_id": 413770,
+      "frame_style": "66",
+      "filename": "413770_typ_reg_sty_030.jpg"
+    },
+    {
+      "catalog_id": 145246,
+      "name": "Brought Back",
+      "art_id": 458105,
+      "frame_style": "240",
+      "filename": "458105_typ_canvas_sty_050.jpg"
+    }
   ]
 }
