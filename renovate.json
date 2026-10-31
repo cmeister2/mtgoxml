@@ -1,5 +1,5 @@
 {
-  "extends": ["github>cmeister2/renovate"],
+  "extends": ["github>cmeister2/renovate:yayornay"],
   "cargo": {
     "constraints": { "rust": "1.85" },
     "constraintsFiltering": "strict"
