@@ -21,7 +21,7 @@ jobs:
       - uses: cmeister2/evenflow@89c8b1bc1f330a7ffaeca3df65e42ff2513dd604 # main
         with:
           # renovate: datasource=github-releases depName=cmeister2/evenflow
-          version: '0.3.0'
+          version: '0.3.1'
           strict: 'true'
 
   rust:
