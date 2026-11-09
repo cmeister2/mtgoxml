@@ -886,7 +886,7 @@ mod tests {
             record(1, "Card", "CARD", 10)
         );
         let public = json_file(&output.join("avatars/index.json"));
-        assert_eq!(public["schema_version"], 1);
+        assert_eq!(public["schema_version"], 2);
         assert_eq!(
             public["application_version"],
             metadata.source.application_version
@@ -904,13 +904,42 @@ mod tests {
             ["rendered", "missing", "unsupported"]
         );
         let webp = avatar_webp();
-        let relative = format!("assets/{}.webp", crate::digest_bytes(&webp).unwrap());
-        assert_eq!(rows[0]["url"], relative);
+        assert_eq!(rows[0]["path"], "webp/10.webp");
+        assert_eq!(rows[0]["sha256"], crate::digest_bytes(&webp).unwrap());
+        assert_eq!(rows[0]["size"], webp.len());
+        let preview = &rows[0]["preview"];
+        let relative = preview["url"].as_str().unwrap();
+        let compressed = fs::read(output.join("avatars").join(relative)).unwrap();
+        assert_ne!(compressed, webp);
+        assert_eq!(preview["sha256"], crate::digest_bytes(&compressed).unwrap());
         assert_eq!(
-            fs::read(output.join("avatars").join(relative)).unwrap(),
-            webp
+            relative,
+            format!("assets/{}.webp", preview["sha256"].as_str().unwrap())
         );
-        assert!(rows[1].get("url").is_none());
+        assert_eq!(preview["size"], compressed.len());
+        assert_eq!(preview["quality"], 90);
+        assert_eq!(preview["lossless"], false);
+        let decoded: Vec<_> = webp_animation::Decoder::new(&compressed)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|frame| frame.timestamp())
+                .collect::<Vec<_>>(),
+            [100, 200]
+        );
+        assert!(decoded.iter().all(|frame| frame.dimensions() == (1, 1)));
+        assert_eq!(
+            fs::read(input.join("animated-avatars.json")).unwrap(),
+            index
+        );
+        assert_eq!(
+            digest_file(&input.join("animated-avatars.tar.gz")).unwrap(),
+            metadata.animated_avatars.as_ref().unwrap().archive_sha256
+        );
+        assert!(rows[1].get("preview").is_none());
         assert_eq!(
             fs::read_dir(output.join("avatars/assets")).unwrap().count(),
             1
@@ -928,6 +957,54 @@ mod tests {
                 .to_string()
                 .contains("already finalized")
         );
+    }
+
+    /// Shared source bytes produce one preview, but every archived copy must still verify.
+    #[test]
+    fn deduplicates_previews_without_skipping_source_verification() {
+        for corrupt in [false, true] {
+            let directory = TestDirectory::new();
+            let (input, mut metadata) = directory.capture_with_avatars();
+            let mut rows: Vec<Value> =
+                serde_json::from_slice(&fs::read(input.join("animated-avatars.json")).unwrap())
+                    .unwrap();
+            let mut duplicate = rows[0].clone();
+            duplicate["id"] = json!(13);
+            duplicate["path"] = json!("webp/13.webp");
+            rows.push(duplicate);
+            write_avatar_index(&input, &rows);
+            let webp = avatar_webp();
+            let mut second = webp.clone();
+            if corrupt {
+                second[20] ^= 1;
+            }
+            write_avatar_archive(
+                &input,
+                &[("webp/10.webp", &webp), ("webp/13.webp", &second)],
+            );
+            let avatars = metadata.animated_avatars.as_mut().unwrap();
+            avatars.definition_count += 1;
+            avatars.rendered_count += 1;
+            avatars.index_sha256 = digest_file(&input.join("animated-avatars.json")).unwrap();
+            avatars.archive_sha256 = digest_file(&input.join("animated-avatars.tar.gz")).unwrap();
+            save_capture_checksums(&input, &metadata);
+            let output = directory.path.join("site");
+            if corrupt {
+                assert!(build(&input, &output).is_err());
+                assert!(!output.exists());
+            } else {
+                build(&input, &output).unwrap();
+                let public = json_file(&output.join("avatars/index.json"));
+                assert_eq!(
+                    public["avatars"][0]["preview"],
+                    public["avatars"][3]["preview"]
+                );
+                assert_eq!(
+                    fs::read_dir(output.join("avatars/assets")).unwrap().count(),
+                    1
+                );
+            }
+        }
     }
 
     /// Rehashed archives still cannot publish missing, duplicate, unsafe, or corrupt content.

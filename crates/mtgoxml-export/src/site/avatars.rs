@@ -1,17 +1,18 @@
-//! Publish only checksum-verified, indexed WebPs from the preserved avatar archive.
+//! Publish quality-90 derivatives of checksum-verified, indexed release WebPs.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 use serde::Serialize;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
+use serde_json::{Value, json};
 
-use crate::{ANIMATED_AVATAR_ASSETS, Result, Snapshot, verify_animated_index};
+use crate::{
+    ANIMATED_AVATAR_ASSETS, Result, Snapshot, avatar_assets::webp, digest_bytes,
+    verify_animated_index,
+};
 
 /// Match the maximum definition count accepted by the avatar generator.
 const MAX_AVATARS: usize = 4096;
@@ -28,7 +29,7 @@ const MAX_WEBP_TOTAL: u64 = 1024 * 1024 * 1024;
 
 /// Archive-entry evidence already checked structurally by the JSON array reader.
 struct Expected {
-    /// Canonical SHA-256 that also names the public asset.
+    /// Canonical SHA-256 of the lossless release WebP.
     digest: String,
     /// Exact source file size recorded after native encoding and decoding.
     size: u64,
@@ -57,7 +58,7 @@ struct Manifest<'a> {
     missing_count: usize,
     /// Definitions whose effect or rendering source was not supported.
     unsupported_count: usize,
-    /// Original index rows extended with a verified relative URL for rendered avatars.
+    /// Original release rows extended with verified quality-90 preview metadata.
     avatars: Vec<Value>,
 }
 
@@ -82,6 +83,7 @@ pub(super) fn build(input: &Path, output: &Path, snapshot: &Snapshot) -> Result<
             .as_object_mut()
             .ok_or("avatar index row must be an object")?;
         record.remove("url");
+        record.remove("preview");
         if record.get("status").and_then(Value::as_str) == Some("rendered") {
             // Apply publication limits before trusting a row as an extraction target.
             let path = record
@@ -103,15 +105,30 @@ pub(super) fn build(input: &Path, output: &Path, snapshot: &Snapshot) -> Result<
                 .checked_add(size)
                 .filter(|size| *size <= MAX_WEBP_TOTAL)
                 .ok_or("avatar publication exceeds its total size limit")?;
-            record.insert("url".into(), Value::String(format!("assets/{digest}.webp")));
             expected.insert(path, Expected { digest, size });
         }
     }
     let directory = output.join("avatars");
     fs::create_dir_all(directory.join("assets"))?;
-    publish_assets(input, &directory.join("assets"), &expected)?;
+    let mut previews = publish_assets(input, &directory.join("assets"), &expected)?;
+    for row in &mut rows {
+        // Release paths, hashes and encoding metadata keep their original meaning.
+        if row.get("status").and_then(Value::as_str) == Some("rendered") {
+            // Attach the derived file only after every archive entry has been validated.
+            let path = row
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("rendered avatar is missing its archive path")?;
+            let preview = previews
+                .remove(path)
+                .ok_or("rendered avatar is missing its published preview")?;
+            row.as_object_mut()
+                .ok_or("avatar index row must be an object")?
+                .insert("preview".into(), preview);
+        }
+    }
     let manifest = Manifest {
-        schema_version: 1,
+        schema_version: 2,
         application_version: &snapshot.source.application_version,
         tag: &snapshot.tag,
         renderer_version: &metadata.renderer_version,
@@ -144,12 +161,12 @@ fn safe_archive_path(path: &[u8]) -> Result<&str> {
     Ok(path)
 }
 
-/// Stream the complete archive, materializing only exact indexed regular WebP entries.
+/// Validate the complete archive and publish only derivatives of indexed WebP entries.
 fn publish_assets(
     input: &Path,
     output: &Path,
     expected: &BTreeMap<String, Expected>,
-) -> Result<()> {
+) -> Result<BTreeMap<String, Value>> {
     let decoder = MultiGzDecoder::new(File::open(input.join(ANIMATED_AVATAR_ASSETS[1]))?);
     let mut archive = tar::Archive::new(decoder.take(MAX_ARCHIVE_BYTES + 1));
     // Continue through zero padding so hidden trailing archives do not escape path validation.
@@ -157,6 +174,9 @@ fn publish_assets(
     let mut seen = BTreeSet::new();
     let mut found = BTreeSet::new();
     let mut long_name = None;
+    let mut published = BTreeMap::new();
+    let mut cache = BTreeMap::new();
+    let mut published_total = 0_u64;
     for entry in archive.entries()?.raw(true) {
         // Raw iteration prevents the tar library from allocating unbounded extension payloads.
         let mut entry = entry?;
@@ -188,11 +208,37 @@ fn publish_assets(
             if entry.size() != evidence.size {
                 return Err(format!("avatar archive size mismatch: {path}").into());
             }
-            copy_webp(
-                &mut entry,
-                &output.join(format!("{}.webp", evidence.digest)),
-                evidence,
-            )?;
+            let source = read_webp(&mut entry, evidence)?;
+            let preview = match cache.get(&evidence.digest) {
+                Some(preview) => Value::clone(preview),
+                None => {
+                    // Encode each verified source once and name its derivative by the new bytes.
+                    let (encoded, metadata) = webp::compress_preview(&source)?;
+                    if encoded.len() as u64 > MAX_WEBP_BYTES {
+                        return Err("compressed avatar exceeds its publication size limit".into());
+                    }
+                    let digest = digest_bytes(&encoded)?;
+                    let path = output.join(format!("{digest}.webp"));
+                    write_webp(&path, &encoded)?;
+                    let mut preview = serde_json::to_value(metadata)?;
+                    preview
+                        .as_object_mut()
+                        .ok_or("compressed avatar metadata must be an object")?
+                        .insert("url".into(), json!(format!("assets/{digest}.webp")));
+                    cache.insert(evidence.digest.clone(), preview.clone());
+                    preview
+                }
+            };
+            published_total = published_total
+                .checked_add(
+                    preview
+                        .get("size")
+                        .and_then(Value::as_u64)
+                        .ok_or("compressed avatar is missing its size")?,
+                )
+                .filter(|size| *size <= MAX_WEBP_TOTAL)
+                .ok_or("compressed avatars exceed their total size limit")?;
+            published.insert(path.clone(), preview);
             found.insert(path);
         } else if path.starts_with("webp/") {
             return Err(format!("unindexed WebP in avatar archive: {path}").into());
@@ -211,51 +257,34 @@ fn publish_assets(
     if found.len() != expected.len() {
         return Err("avatar archive is missing an indexed WebP".into());
     }
-    Ok(())
+    Ok(published)
 }
 
-/// Copy one bounded preview while checking its complete byte hash, size, and WebP header.
-fn copy_webp(input: &mut impl Read, output: &Path, expected: &Expected) -> Result<()> {
-    let mut destination = match OpenOptions::new().write(true).create_new(true).open(output) {
-        Ok(file) => Some(file),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
-        Err(error) => return Err(error.into()),
-    };
-    let mut digest = Sha256::new();
-    let mut size = 0_u64;
-    let mut prefix = Vec::with_capacity(12);
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        // Even deduplicated content is fully read and verified against this index row.
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        size += count as u64;
-        if size > expected.size {
-            return Err("avatar WebP exceeds its declared size".into());
-        }
-        prefix.extend_from_slice(&buffer[..count.min(12 - prefix.len())]);
-        digest.update(&buffer[..count]);
-        if let Some(destination) = &mut destination {
-            destination.write_all(&buffer[..count])?;
-        }
-    }
-    let mut actual = String::with_capacity(64);
-    for byte in digest.finalize() {
-        write!(actual, "{byte:02x}")?;
-    }
-    if size != expected.size
-        || actual != expected.digest
-        || prefix.len() != 12
-        || &prefix[..4] != b"RIFF"
-        || &prefix[8..] != b"WEBP"
-        || u64::from(u32::from_le_bytes(prefix[4..8].try_into()?)) + 8 != size
+/// Read one bounded release WebP and verify its complete byte hash, size and header.
+fn read_webp(input: &mut impl Read, expected: &Expected) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    input.take(expected.size + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != expected.size
+        || digest_bytes(&bytes)? != expected.digest
+        || bytes.len() < 12
+        || &bytes[..4] != b"RIFF"
+        || &bytes[8..12] != b"WEBP"
+        || u64::from(u32::from_le_bytes(bytes[4..8].try_into()?)) + 8 != expected.size
     {
         return Err("avatar WebP bytes do not match the verified index".into());
     }
-    if let Some(mut destination) = destination {
-        destination.flush()?;
+    Ok(bytes)
+}
+
+/// Install a content-addressed preview once within the unpublished staging directory.
+fn write_webp(path: &Path, bytes: &[u8]) -> Result<()> {
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => {
+            file.write_all(bytes)?;
+            file.flush()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }

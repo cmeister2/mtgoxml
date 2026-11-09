@@ -1,10 +1,11 @@
-//! Lossless animated WebP output verified against every interval of its RGB timeline.
+//! Lossless release animations and smaller website previews with verified playback.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use webp_animation::{
     AnimParams, ColorMode, Decoder, Encoder, EncoderOptions, EncodingConfig, EncodingType,
@@ -14,6 +15,110 @@ use crate::{Result, digest_bytes};
 
 /// Largest duration represented by an animated WebP frame's 24-bit millisecond field.
 const MAX_FRAME_DURATION_MS: u32 = 0x00ff_ffff;
+/// Maximum canvas retained by the native avatar renderer.
+const MAX_PREVIEW_WIDTH: u32 = super::WIDTH;
+/// Maximum canvas height retained by the native avatar renderer.
+const MAX_PREVIEW_HEIGHT: u32 = super::HEIGHT;
+/// Lossy quality used only for the website derivative, independently of preserved releases.
+const PREVIEW_QUALITY: u8 = 90;
+/// Native animation policy limits a complete cycle to two minutes.
+const MAX_PREVIEW_DURATION_MS: u32 = 120_000;
+/// Ten samples per second over the longest supported cycle.
+const MAX_PREVIEW_FRAMES: usize = 1200;
+/// Bound all retained RGB source canvases independently of compressed input size.
+const MAX_PREVIEW_RGB_BYTES: usize = 256 * 1024 * 1024;
+
+/// Build a smaller quality-90 website derivative from a preserved lossless animation.
+///
+/// # Errors
+/// Rejects malformed, excessive, transparent, or incomplete animations and codec failures.
+pub(crate) fn compress_preview(encoded: &[u8]) -> Result<(Vec<u8>, Value)> {
+    // Bound the declared canvas before the decoder can allocate its image buffers.
+    if encoded.len() < 30
+        || &encoded[12..16] != b"VP8X"
+        || u32::from_le_bytes(encoded[16..20].try_into()?) != 10
+    {
+        return Err("avatar preview requires an extended WebP canvas".into());
+    }
+    let width = u24(&encoded[24..27]) + 1;
+    let height = u24(&encoded[27..30]) + 1;
+    if width > MAX_PREVIEW_WIDTH || height > MAX_PREVIEW_HEIGHT {
+        return Err("avatar preview exceeds its canvas limit".into());
+    }
+    let durations = container_durations_bounded(
+        encoded,
+        width,
+        height,
+        MAX_PREVIEW_FRAMES,
+        MAX_PREVIEW_DURATION_MS,
+    )?;
+    let rgb_size = width as usize * height as usize * 3;
+    rgb_size
+        .checked_mul(durations.len())
+        .filter(|bytes| *bytes <= MAX_PREVIEW_RGB_BYTES)
+        .ok_or("avatar preview exceeds its decoded RGB limit")?;
+    let mut frames = Vec::with_capacity(durations.len());
+    let mut end = 0_u32;
+    for frame in Decoder::new(encoded)? {
+        // Decoder completion and interval boundaries must agree with the checked container.
+        let duration = *durations
+            .get(frames.len())
+            .ok_or("unexpected avatar preview source frame")?;
+        end += duration;
+        let rgba = frame.data();
+        if frame.timestamp() != end as i32
+            || frame.dimensions() != (width, height)
+            || rgba.len() != rgb_size / 3 * 4
+            || rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+        {
+            return Err("avatar preview source has invalid canvas or playback data".into());
+        }
+        let rgb = rgba
+            .chunks_exact(4)
+            .flat_map(|pixel| pixel[..3].iter().copied())
+            .collect();
+        frames.push((rgb, duration));
+    }
+    if frames.len() != durations.len() {
+        return Err("avatar preview source decoding ended early".into());
+    }
+    let total = validate_source(width, height, &frames)?;
+    let mut encoder = Encoder::new_with_options(
+        (width, height),
+        EncoderOptions {
+            anim_params: AnimParams { loop_count: 0 },
+            color_mode: ColorMode::Rgb,
+            allow_mixed: false,
+            minimize_size: true,
+            encoding_config: Some(EncodingConfig::new_lossy(f32::from(PREVIEW_QUALITY))),
+            ..EncoderOptions::default()
+        },
+    )?;
+    let mut timestamp = 0_i32;
+    for (rgb, duration) in &frames {
+        encoder.add_frame(rgb, timestamp)?;
+        timestamp += *duration as i32;
+    }
+    let output = encoder.finalize(timestamp)?;
+    let (encoded_frames, distinct_frames, pixel_timeline_exact) =
+        verify_pixels(&output, width, height, &frames, total)?;
+    let metadata = json!({
+        "source_frames": frames.len(),
+        "encoded_frames": encoded_frames,
+        "distinct_frames": distinct_frames,
+        "duration_ms": total,
+        "loop_count": 0,
+        "pixel_timeline_exact": pixel_timeline_exact,
+        "lossless": false,
+        "quality": PREVIEW_QUALITY,
+        "compression_method": 4,
+        "minimize_size": true,
+        "allow_mixed": false,
+        "size": output.len(),
+        "sha256": digest_bytes(&output)?,
+    });
+    Ok((output.to_vec(), metadata))
+}
 
 /// Completion evidence returned only after encoded pixels and playback timing verify.
 #[derive(Debug, Serialize)]
@@ -137,6 +242,17 @@ fn u24(bytes: &[u8]) -> u32 {
 
 /// Validate RIFF boundaries, canvas, infinite looping, and every stored frame duration.
 fn container_durations(bytes: &[u8], width: u32, height: u32) -> Result<Vec<u32>> {
+    container_durations_bounded(bytes, width, height, usize::MAX, u32::MAX)
+}
+
+/// Validate the same container with allocation and playback bounds for website inputs.
+fn container_durations_bounded(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    max_frames: usize,
+    max_duration: u32,
+) -> Result<Vec<u32>> {
     if bytes.len() < 12
         || &bytes[..4] != b"RIFF"
         || &bytes[8..12] != b"WEBP"
@@ -148,6 +264,7 @@ fn container_durations(bytes: &[u8], width: u32, height: u32) -> Result<Vec<u32>
     let mut canvas = false;
     let mut animation = false;
     let mut durations = Vec::new();
+    let mut total = 0_u32;
     while offset < bytes.len() {
         // Bound each RIFF payload before interpreting its canvas, animation, or frame fields.
         let header_end = offset
@@ -193,6 +310,13 @@ fn container_durations(bytes: &[u8], width: u32, height: u32) -> Result<Vec<u32>
                 if duration == 0 {
                     return Err("animated WebP frame has a zero duration".into());
                 }
+                if durations.len() >= max_frames {
+                    return Err("avatar preview exceeds its frame limit".into());
+                }
+                total = total
+                    .checked_add(duration)
+                    .filter(|total| *total <= max_duration)
+                    .ok_or("avatar preview exceeds its playback duration limit")?;
                 durations.push(duration);
             }
             _ => {}
@@ -216,6 +340,22 @@ fn verify(
     frames: &[(Vec<u8>, u32)],
     total: u32,
 ) -> Result<(usize, usize)> {
+    let (encoded_frames, distinct_frames, exact) =
+        verify_pixels(encoded, width, height, frames, total)?;
+    if !exact {
+        return Err("animated WebP pixels differ from source frames".into());
+    }
+    Ok((encoded_frames, distinct_frames))
+}
+
+/// Decode complete playback and measure pixel equality without requiring lossless compression.
+fn verify_pixels(
+    encoded: &[u8],
+    width: u32,
+    height: u32,
+    frames: &[(Vec<u8>, u32)],
+    total: u32,
+) -> Result<(usize, usize, bool)> {
     let durations = container_durations(encoded, width, height)?;
     let decoder = Decoder::new(encoded)?;
     if decoder.dimensions() != (width, height) {
@@ -226,6 +366,7 @@ fn verify(
     let mut source_index = 0_usize;
     let mut source_end = frames[0].1;
     let mut different = BTreeSet::new();
+    let mut exact = true;
     for frame in decoder {
         // Each decoded canvas must cover the same interval declared by its container frame.
         let duration = *durations
@@ -241,9 +382,14 @@ fn verify(
             );
         }
         let rgba = frame.data();
+        if rgba.len() != width as usize * height as usize * 4
+            || rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+        {
+            return Err("animated WebP decoded canvas is not opaque RGBA".into());
+        }
         let mut covered = previous_end;
         while covered < end {
-            // A codec-coalesced frame can span several identical source intervals.
+            // Lossy quantization may coalesce different source intervals into one image.
             while source_end <= covered {
                 // Advance only past source frames fully covered by the current playback instant.
                 source_index += 1;
@@ -253,17 +399,11 @@ fn verify(
                     .1;
             }
             let expected = &frames[source_index].0;
-            if rgba.len() != expected.len() / 3 * 4
-                || !rgba
+            exact &= rgba.len() == expected.len() / 3 * 4
+                && rgba
                     .chunks_exact(4)
                     .zip(expected.chunks_exact(3))
-                    .all(|(actual, rgb)| &actual[..3] == rgb && actual[3] == 255)
-            {
-                return Err(format!(
-                    "animated WebP pixels differ from source frame {source_index}"
-                )
-                .into());
-            }
+                    .all(|(actual, rgb)| &actual[..3] == rgb);
             covered = end.min(source_end);
         }
         different.insert(Sha256::digest(rgba).to_vec());
@@ -276,7 +416,7 @@ fn verify(
             "animated WebP decoder did not reproduce the complete animated timeline".into(),
         );
     }
-    Ok((decoded_count, different.len()))
+    Ok((decoded_count, different.len(), exact))
 }
 
 /// Small pixel and timing regressions exercise the real vendored codec and decoder.
@@ -335,6 +475,73 @@ mod tests {
             .unwrap();
         finite_loop[animation + 12] = 1;
         assert!(verify(&finite_loop, 3, 2, &frames, 700).is_err());
+    }
+
+    /// Website compression preserves archived bytes and playback while producing real lossy frames.
+    #[test]
+    fn website_preview_is_lossy_bounded_and_preserves_playback() {
+        let path = std::env::temp_dir().join(format!(
+            "mtgoxml-preview-{}-{}.webp",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let frames: Vec<_> = [[255, 1, 2], [3, 254, 4], [5, 6, 253]]
+            .into_iter()
+            .zip([120, 300, 80])
+            .map(|(color, duration)| {
+                let mut rgb = color.repeat(16 * 16);
+                rgb[..3].copy_from_slice(&[13, 29, 47]);
+                (rgb, duration)
+            })
+            .collect();
+        let archived = write(&path, 16, 16, &frames).unwrap();
+        let source = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        let (preview, metadata) = compress_preview(&source).unwrap();
+        assert!(archived.lossless);
+        assert!(archived.pixel_timeline_exact);
+        assert_eq!(archived.sha256, digest_bytes(&source).unwrap());
+        assert_eq!(metadata["lossless"], false);
+        assert_eq!(metadata["quality"], 90);
+        assert_eq!(metadata["pixel_timeline_exact"], false);
+        assert_eq!(metadata["duration_ms"], 500);
+        assert_eq!(metadata["loop_count"], 0);
+        assert_eq!(metadata["sha256"], digest_bytes(&preview).unwrap());
+        let mut offset = 12;
+        while offset < preview.len() {
+            // Inspect actual ANMF payloads rather than trusting only the encoding metadata.
+            let size =
+                u32::from_le_bytes(preview[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if &preview[offset..offset + 4] == b"ANMF" {
+                assert_eq!(&preview[offset + 24..offset + 28], b"VP8 ");
+            }
+            offset += 8 + size + (size & 1);
+        }
+        let mut timestamps = Vec::new();
+        for (decoded, channel) in Decoder::new(&preview).unwrap().into_iter().zip(0..3) {
+            let center = &decoded.data()[(8 * 16 + 8) * 4..][..3];
+            assert!(center[channel] > 200);
+            assert!(
+                center
+                    .iter()
+                    .enumerate()
+                    .all(|(index, &value)| index == channel || value < 40)
+            );
+            timestamps.push(decoded.timestamp());
+        }
+        assert_eq!(timestamps, [120, 420, 500]);
+        // Canvas limits are checked before the decoder can allocate the declared image.
+        let mut excessive_canvas = source.clone();
+        excessive_canvas[24..27].copy_from_slice(&[0, 1, 0]);
+        assert!(
+            compress_preview(&excessive_canvas)
+                .unwrap_err()
+                .to_string()
+                .contains("canvas limit")
+        );
+        assert!(container_durations_bounded(&source, 16, 16, 2, 120_000).is_err());
+        assert!(container_durations_bounded(&source, 16, 16, 1200, 499).is_err());
+        assert!(compress_preview(&source[..source.len() - 1]).is_err());
     }
 
     /// Invalid dimensions, durations, buffers, and still images fail before installing output.

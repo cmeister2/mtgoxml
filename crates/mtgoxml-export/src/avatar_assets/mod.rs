@@ -28,8 +28,8 @@ mod render;
 mod shaders;
 /// Publisher texture capture, decoding, and sampler locations.
 mod texture;
-/// Native lossless encoding with decoded-pixel and timing verification.
-mod webp;
+/// Lossless release encoding and smaller website previews with playback verification.
+pub(crate) mod webp;
 
 /// Version of structured effect extraction and the deterministic preview policy.
 const RENDERER_VERSION: &str = "mtgoxml-avatar-webp-v2";
