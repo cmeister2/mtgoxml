@@ -15,7 +15,7 @@ mtgoxml = { path = "../..", features = ["http", "serde"] }
 cildec = "0.1.0"
 flate2 = "1.1.10"
 glow = { version = "0.18.0", default-features = false }
-image = { version = "=0.25.9", default-features = false, features = ["png", "jpeg"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 khronos-egl = { version = "6.0.0", default-features = false, features = ["1_5", "dynamic"] }
 minijinja = { version = "3.1.0", default-features = false, features = ["builtins", "multi_template", "serde"] }
 roxmltree = "0.21.2"
