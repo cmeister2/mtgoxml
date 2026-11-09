@@ -8,7 +8,64 @@ use mtgoxml::carddata::{
     CardDataFile, CardDatabase, CardSet, DigitalObject, Error, FieldValue, ParseOptions,
     ResolvedValue,
 };
-use mtgoxml::{Application, Deployment};
+use mtgoxml::{Application, Deployment, Resource, ResourceKind, Url};
+
+/// A declared component lets parser tests check filenames without an HTTP request.
+fn component_resource(path: &str, kind: ResourceKind) -> Resource {
+    Resource {
+        path: path.into(),
+        url: Url::parse("https://patch.example.test/component").unwrap(),
+        kind,
+        size: None,
+        hashes: Vec::new(),
+        group: None,
+        optional: None,
+    }
+}
+
+/// Set fragments and lookups accept their own case-insensitive logical filenames.
+#[test]
+fn parsed_components_validate_their_declared_resource_identity() {
+    let set = CardDataFile::parse(r#"<CardSet id="ONE" />"#).unwrap();
+    for path in [
+        "CardDataSource/client_ONE.xml",
+        "carddatasource/CLIENT_one_DO.XML",
+    ] {
+        set.validate_resource(&component_resource(path, ResourceKind::File))
+            .unwrap();
+    }
+    let lookup = CardDataFile::parse("<CARDNAME_STRING_ITEMS />").unwrap();
+    lookup
+        .validate_resource(&component_resource(
+            "CardDataSource/cardname_string.XML",
+            ResourceKind::File,
+        ))
+        .unwrap();
+    for (file, path, kind) in [
+        (&set, "CardDataSource/client_OTHER.xml", ResourceKind::File),
+        (&set, "CardDataSource/ONE.xml", ResourceKind::File),
+        (&lookup, "CardDataSource/OTHER.xml", ResourceKind::File),
+        (&set, "Elsewhere/client_ONE.xml", ResourceKind::File),
+        (
+            &set,
+            "CardDataSource/client_ONE.xml",
+            ResourceKind::Assembly,
+        ),
+        (
+            &set,
+            "CardDataSource/MTGOV3CardData.xml",
+            ResourceKind::File,
+        ),
+    ] {
+        assert!(
+            matches!(
+                file.validate_resource(&component_resource(path, kind)),
+                Err(Error::InvalidData(message)) if message.contains(path)
+            ),
+            "resource {path}"
+        );
+    }
+}
 
 /// Captured set records retain one complete card and its minimal foil clone.
 const LIVE_SET: &[u8] = include_bytes!("../fixtures/carddata/live/client_V09.xml");

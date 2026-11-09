@@ -18,7 +18,7 @@ export default defineConfig({
     launchOptions: executablePath ? { executablePath } : {},
   },
   webServer: {
-    command: "node scripts/serve.mjs web 4174 /mtgoxml/",
+    command: "node scripts/serve.mjs web 4174 /mtgoxml/ templates/index.html",
     url: baseURL,
     reuseExistingServer: false,
     timeout: 10_000,

@@ -175,7 +175,7 @@ impl Client {
         let mut database = application.card_database();
         for resource in application
             .card_data_resources()
-            .filter(|resource| is_component(resource))
+            .filter(|resource| resource.is_card_data_component())
         {
             let file = self.fetch_card_data(resource)?;
             database.insert(application, file)?;
@@ -217,7 +217,7 @@ impl Client {
             ] {
                 if let Some(resource) = application
                     .resource(&name)
-                    .filter(|resource| is_component(resource))
+                    .filter(|resource| resource.is_card_data_component())
                 {
                     found = true;
                     selected.insert(resource.path.clone());
@@ -247,7 +247,7 @@ impl Client {
             let path = format!("CardDataSource/{table}.xml");
             let resource = application
                 .resource(&path)
-                .filter(|resource| is_component(resource))
+                .filter(|resource| resource.is_card_data_component())
                 .ok_or_else(|| Error::MissingCardDataResource(path.clone()))?;
             let file = self.fetch_card_data(resource)?;
             database.insert(application, file)?;
@@ -302,36 +302,9 @@ impl Client {
         let file = self
             .card_data_options
             .from_reader(response.body_mut().as_reader())?;
-        let filename = resource.path.rsplit('/').next().unwrap_or_default();
-        let matches = match &file {
-            CardDataFile::Set(set) => {
-                filename.eq_ignore_ascii_case(&format!("client_{}.xml", set.id))
-                    || filename.eq_ignore_ascii_case(&format!("client_{}_DO.xml", set.id))
-            }
-            CardDataFile::Lookup(table) => {
-                filename.eq_ignore_ascii_case(&format!("{}.xml", table.name))
-            }
-        };
-        if !matches {
-            return Err(carddata::Error::InvalidData(format!(
-                "component identity does not match {}",
-                resource.path
-            ))
-            .into());
-        }
+        file.validate_resource(resource)?;
         Ok(file)
     }
-}
-
-/// Select component XML files while excluding the external-entity master index.
-fn is_component(resource: &Resource) -> bool {
-    resource.kind == ResourceKind::File
-        && resource.is_xml()
-        && !resource
-            .path
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case("MTGOV3CardData.xml"))
 }
 
 /// Collect table names from both ordinary fields and nested attribute groups.

@@ -45,8 +45,28 @@ otherwise loading reports the missing object ID. Both database-loading methods
 validate all loaded objects before returning.
 
 `ResolvedObject::friendly()` exposes readable, typed fields and retains every
-unpromoted property in `mtgo`. Enable `serde` to serialize that view without
-requiring HTTP. The `snapshot` feature includes both capabilities for the exporter.
+unpromoted property in `mtgo`. Enable `serde` to serialize or deserialize that view without
+requiring HTTP. The workspace's separate exporter crate enables both capabilities.
+
+## Avatar metadata
+
+`avatar::Avatar` reads avatar flags, artwork IDs, and premium-effect codes from
+resolved objects. Its asset paths use the client's catalog-ID fallback and are
+relative to `ArtworkResolver::art_root_url()`. Primary artwork continues to use
+the separately configured avatar directory through `ArtworkResolver::for_object`.
+
+```
+fn avatar_paths(object: &mtgoxml::ResolvedObject<'_>)
+    -> Result<Vec<String>, mtgoxml::carddata::Error>
+{
+    Ok(mtgoxml::avatar::Avatar::from_object(object)?
+        .map_or_else(Vec::new, |avatar| avatar.asset_paths()))
+}
+```
+
+`Avatar::from_friendly` applies the same rules to an owned `FriendlyObject`,
+including a record read from a saved dataset. These APIs construct paths without
+downloading images or loading rendering tools.
 
 ## Resource discovery
 
@@ -75,6 +95,11 @@ Discovery rejects ambiguous application references, mismatched identities,
 duplicate logical paths, unsupported URL schemes, and invalid file paths.
 Signatures and payload hashes are retained without verification. Other resource
 formats are available as URLs and metadata; CardDataSource has dedicated parsers.
+
+`Resource::is_card_data_component()` selects standalone component XML files.
+`CardDataFile::validate_resource()` checks that a parsed set or lookup table
+matches its declared resource filename; byte sizes and hashes remain available
+for the caller to verify.
 
 ## Offline and custom transports
 
@@ -118,7 +143,8 @@ cargo run --locked --features http --example card -- 33915 V09
 The `resources` example accepts a deployment URL as its first argument. The `card`
 example accepts an object ID and set code.
 
-The optional `snapshot` feature enables the `mtgoxml-export` executable, which
-downloads verified components and writes compressed JSON Lines. See the repository's
+The workspace's private `mtgoxml-export` crate downloads verified components and
+writes compressed JSON Lines and animated-avatar assets. Build it with
+`cargo build --locked --release -p mtgoxml-export`. See the repository's
 [data-release guide](https://github.com/cmeister2/mtgoxml/blob/main/docs/data-releases.md)
 for its schema and scheduled publication workflow.

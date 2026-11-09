@@ -106,4 +106,37 @@ impl CardDataFile {
     pub fn from_reader(reader: impl Read) -> Result<Self, Error> {
         ParseOptions::default().from_reader(reader)
     }
+
+    /// Check that a component's declared set or table matches its resource filename.
+    ///
+    /// Set fragments must use `client_CODE.xml` or `client_CODE_DO.xml`, while
+    /// lookup tables use `NAME.xml`. Matching ignores ASCII case, as the client
+    /// does. Resource sizes and digests are not checked by this operation.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidData`] if the resource is not a card-data
+    /// component or its filename disagrees with the parsed set or table name.
+    pub fn validate_resource(&self, resource: &crate::Resource) -> Result<(), Error> {
+        if !resource.is_card_data_component() {
+            return Err(Error::InvalidData(format!(
+                "not a card-data component resource: {}",
+                resource.path
+            )));
+        }
+        let filename = resource.path.rsplit('/').next().unwrap_or_default();
+        let matches = match self {
+            Self::Set(set) => {
+                filename.eq_ignore_ascii_case(&format!("client_{}.xml", set.id))
+                    || filename.eq_ignore_ascii_case(&format!("client_{}_DO.xml", set.id))
+            }
+            Self::Lookup(table) => filename.eq_ignore_ascii_case(&format!("{}.xml", table.name)),
+        };
+        if !matches {
+            return Err(Error::InvalidData(format!(
+                "component identity does not match {}",
+                resource.path
+            )));
+        }
+        Ok(())
+    }
 }

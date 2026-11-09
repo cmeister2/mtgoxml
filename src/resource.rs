@@ -54,4 +54,19 @@ impl Resource {
             .next()
             .is_some_and(|directory| directory.eq_ignore_ascii_case("CardDataSource"))
     }
+
+    /// Whether this is an independently parseable CardDataSource XML file.
+    ///
+    /// Excludes assemblies, non-XML resources, and the `MTGOV3CardData.xml`
+    /// master index, which requires external-entity expansion.
+    pub fn is_card_data_component(&self) -> bool {
+        self.kind == ResourceKind::File
+            && self.is_card_data()
+            && self.is_xml()
+            && !self
+                .path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("MTGOV3CardData.xml"))
+    }
 }

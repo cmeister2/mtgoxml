@@ -6,6 +6,7 @@ mod error;
 mod location;
 mod resource;
 
+pub mod avatar;
 pub mod carddata;
 pub mod cardstyle;
 pub mod imagenames;
@@ -28,8 +29,7 @@ pub use resource::{Resource, ResourceKind};
 use std::collections::HashSet;
 
 use clickonce::{
-    AssemblyDependency, AssemblyIdentity, AssemblyVersion, Dependency, DependencyType, Manifest,
-    ManifestKind,
+    AssemblyDependency, AssemblyVersion, Dependency, DependencyType, Manifest, ManifestKind,
 };
 
 /// The official live MTGO ClickOnce deployment endpoint.
@@ -45,8 +45,8 @@ pub struct Deployment {
     manifest: Manifest,
     /// The resolved application-manifest URL, without payload extension mapping.
     application_manifest_url: Url,
-    /// The identity required by the selected application reference.
-    application_identity: AssemblyIdentity,
+    /// The unique downloadable assembly reference selecting this application.
+    application_reference: AssemblyDependency,
 }
 
 impl Deployment {
@@ -81,12 +81,12 @@ impl Deployment {
             reference.codebase.as_deref().unwrap_or_default(),
             false,
         )?;
-        let application_identity = reference.identity.clone();
+        let application_reference = reference.clone();
         Ok(Self {
             url,
             manifest,
             application_manifest_url,
-            application_identity,
+            application_reference,
         })
     }
 
@@ -103,6 +103,14 @@ impl Deployment {
     /// The application manifest to fetch next.
     pub fn application_manifest_url(&self) -> &Url {
         &self.application_manifest_url
+    }
+
+    /// The unique application reference selected from the deployment manifest.
+    ///
+    /// This retains its declared identity, codebase, byte size, and hashes for
+    /// callers that capture or verify the application-manifest response.
+    pub fn application_reference(&self) -> &AssemblyDependency {
+        &self.application_reference
     }
 
     /// Whether payload URLs must end in `.deploy`; omission defaults to false.
@@ -136,7 +144,7 @@ impl Deployment {
     pub fn with_application(self, url: Url, manifest: Manifest) -> Result<Application, Error> {
         location::check_url(&url)?;
         require_kind(&manifest, ManifestKind::Application)?;
-        if manifest.identity != self.application_identity {
+        if manifest.identity != self.application_reference.identity {
             return Err(Error::ApplicationIdentityMismatch);
         }
         let mapped = self.map_file_extensions();

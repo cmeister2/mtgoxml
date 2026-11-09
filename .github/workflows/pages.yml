@@ -8,7 +8,11 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/**
+      - crates/**
       - web/**
+      - templates/**
+      - scripts/select-avatar-snapshot.mjs
+      - scripts/install-avatar-shader-tools.sh
   workflow_run:
     workflows: [MTGO card data]
     branches: [main]
@@ -29,14 +33,16 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name != 'workflow_run' ||
        github.event.workflow_run.conclusion == 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Build exporter
+        run: cargo build --locked --release -p mtgoxml-export
       - name: Find the MTGO export
         id: mtgo_export
         uses: cardinalby/git-get-release-action@2ab178299eecb253f820dcf2cce11f62be1178f7 # v1
@@ -52,10 +58,62 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MTGO_EXPORT_TAG: ${{ steps.mtgo_export.outputs.tag_name }}
         run: gh release download "$MTGO_EXPORT_TAG" --repo "$GITHUB_REPOSITORY" --dir snapshot
-      - name: Build and verify browser data
+      - name: Select published or locally completed avatar snapshot
+        id: avatar_source
+        run: node scripts/select-avatar-snapshot.mjs snapshot/snapshot.json
+      - name: Cache completed legacy avatar snapshot
+        if: steps.avatar_source.outputs.legacy == 'true'
+        id: avatar_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: avatar-snapshot
+          # Include every original downloaded byte, including snapshot.json and SHA256SUMS.
+          # Exact keys only: restored outputs still pass native site verification below.
+          key: >-
+            pages-avatar-bootstrap-v2-ubuntu26-${{ runner.arch }}-${{ hashFiles('snapshot/**') }}-${{
+            hashFiles('Cargo.toml', 'Cargo.lock', 'crates/mtgoxml-export/Cargo.toml',
+            'crates/mtgoxml-export/src/main.rs', 'crates/mtgoxml-export/src/avatar_assets/**',
+            'scripts/install-avatar-shader-tools.sh', 'src/**') }}
+      - name: Cache avatar shader compiler
+        if: >-
+          steps.avatar_source.outputs.legacy == 'true' &&
+          steps.avatar_cache.outputs.cache-hit != 'true'
+        id: shader_tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mtgoxml-shader-tools
+          key: avatar-vkd3d-2.1-ubuntu26-${{ runner.arch }}-${{ hashFiles('scripts/install-avatar-shader-tools.sh') }}
+      - name: Install avatar rendering tools
+        if: >-
+          steps.avatar_source.outputs.legacy == 'true' &&
+          steps.avatar_cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libgl1-mesa-dri spirv-cross
+      - name: Install shader compiler build dependencies
+        if: >-
+          steps.avatar_source.outputs.legacy == 'true' &&
+          steps.avatar_cache.outputs.cache-hit != 'true' &&
+          steps.shader_tools.outputs.cache-hit != 'true'
         run: >-
-          cargo run --locked --release --bin mtgoxml-export --features snapshot --
-          site snapshot _site
+          sudo apt-get install --no-install-recommends -y
+          build-essential pkg-config flex bison libjson-perl libvulkan-dev spirv-headers
+      - name: Prepare avatar shader compiler
+        if: >-
+          steps.avatar_source.outputs.legacy == 'true' &&
+          steps.avatar_cache.outputs.cache-hit != 'true'
+        run: bash scripts/install-avatar-shader-tools.sh "$RUNNER_TEMP/mtgoxml-shader-tools"
+      - name: Complete legacy avatars in an isolated snapshot
+        if: >-
+          steps.avatar_source.outputs.legacy == 'true' &&
+          steps.avatar_cache.outputs.cache-hit != 'true'
+        run: |
+          cp -a snapshot avatar-snapshot
+          target/release/mtgoxml-export avatars avatar-snapshot
+      - name: Build and verify browser data
+        env:
+          SITE_SNAPSHOT: ${{ steps.avatar_source.outputs.snapshot_directory }}
+        run: target/release/mtgoxml-export site "$SITE_SNAPSHOT" _site
       - name: Upload the complete site
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
@@ -64,7 +122,7 @@ jobs:
   deploy:
     name: Deploy card browser
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       pages: write

@@ -135,6 +135,77 @@ fn deployment_resolves_version_directory_and_retains_metadata() {
     );
 }
 
+/// The selected reference retains payload metadata while prerequisites remain ignored.
+#[test]
+fn deployment_exposes_the_selected_application_reference() {
+    let original = Deployment::from_bytes(
+        mtgoxml::LIVE_DEPLOYMENT_URL,
+        include_bytes!("../fixtures/live/MTGO.application"),
+    )
+    .unwrap();
+    let expected = original.application_reference();
+    assert!(expected.codebase.is_some());
+    assert!(expected.size.is_some());
+    assert!(!expected.hashes.is_empty());
+    assert!(original.manifest().dependencies.iter().any(|dependency| {
+        matches!(dependency, Dependency::Assembly(reference) if reference == expected)
+    }));
+
+    let xml = String::from_utf8(UNMAPPED.to_vec()).unwrap().replace(
+        "</assembly>",
+        r#"<dependency><dependentAssembly dependencyType="preRequisite" codebase="runtime.dll">
+          <assemblyIdentity name="Runtime" /></dependentAssembly></dependency>
+          <dependency><dependentAssembly dependencyType="future" codebase="future.dll">
+          <assemblyIdentity name="Future" /></dependentAssembly></dependency></assembly>"#,
+    );
+    let deployment = Deployment::from_bytes(DEPLOYMENT_URL, xml.as_bytes()).unwrap();
+    let reference = deployment.application_reference();
+    assert_eq!(reference.identity.name, "MTGO.exe");
+    assert_eq!(reference.size, Some(512));
+    assert_eq!(
+        reference.codebase.as_deref(),
+        Some(r"Application Files\MTGO_1_2_3_4\MTGO.exe.manifest")
+    );
+    assert_eq!(
+        deployment
+            .clone()
+            .with_application_bytes(RESOURCES)
+            .unwrap()
+            .deployment()
+            .application_reference(),
+        reference
+    );
+}
+
+/// Component selection skips the external-entity index and non-file or non-XML resources.
+#[test]
+fn card_data_component_selection_is_shared_by_manifest_consumers() {
+    let application = with_contents(
+        r#"<file name="CardDataSource/client_ONE.xml" />
+           <file name="carddatasource/CARDNAME_STRING.XML" />
+           <file name="CardDataSource/MTGOV3CARDDATA.XML" />
+           <file name="CardDataSource/MTGOV3CardData.dtd" />
+           <file name="CardDataSource/client_ONE.xml.deploy" />
+           <file name="Elsewhere/client_ONE.xml" />
+           <dependency><dependentAssembly dependencyType="install" codebase="CardDataSource/Assembly.xml">
+             <assemblyIdentity name="Assembly" /></dependentAssembly></dependency>"#,
+    )
+    .unwrap();
+    let components = application
+        .resources()
+        .iter()
+        .filter(|resource| resource.is_card_data_component())
+        .map(|resource| resource.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        components,
+        [
+            "CardDataSource/client_ONE.xml",
+            "carddatasource/CARDNAME_STRING.XML"
+        ]
+    );
+}
+
 /// Both absent and explicit false mapping leave payload names unchanged.
 #[test]
 fn unmapped_payloads_and_default_mapping_use_original_extensions() {
