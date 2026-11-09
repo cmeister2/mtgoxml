@@ -80,6 +80,8 @@ impl std::error::Error for ArtworkError {
 /// sub-objects use the normal artwork scheme.
 #[derive(Debug, Clone)]
 pub struct ArtworkResolver {
+    /// Root shared by configured artwork and fixed renderer asset paths.
+    art_root_url: Url,
     /// Configured artwork directory with a trailing slash.
     base_url: Url,
     /// Optional configured avatar and Vanguard artwork directory.
@@ -157,6 +159,7 @@ impl ArtworkResolver {
             })
             .transpose()?;
         Ok(Self {
+            art_root_url: root_url,
             base_url,
             avatar_base_url,
         })
@@ -165,6 +168,11 @@ impl ArtworkResolver {
     /// The configured artwork directory, with a trailing slash.
     pub fn base_url(&self) -> &Url {
         &self.base_url
+    }
+
+    /// The resolved `artRoot`, before configured artwork subdirectories are appended.
+    pub fn art_root_url(&self) -> &Url {
+        &self.art_root_url
     }
 
     /// The configured avatar and Vanguard directory, when supplied by the client.
@@ -199,41 +207,30 @@ impl ArtworkResolver {
             None if avatar => "0",
             _ => object.text("ARTID")?,
         };
-        let art_id = artwork_id(raw_id)?;
+        let art_id = crate::avatar::artwork_id(raw_id)?;
         let suffix = style::primary_suffix(object)?;
-        let (mut url, art_id, fallback) = if avatar {
+        let (mut url, filename) = if avatar {
             // The client substitutes the catalog ID only when the avatar art ID is zero.
             let base = self.avatar_base_url.as_ref()?.clone();
-            if art_id == 0 {
-                // Catalog-based avatar filenames retain the client's signed integer bounds.
-                let id = object.id();
-                if !(1..=i32::MAX as u64).contains(&id) {
-                    return None;
-                }
-                (base, id, "c")
-            } else {
-                (base, art_id, "")
+            if art_id == 0 && !(1..=i32::MAX as u64).contains(&object.id()) {
+                return None;
             }
+            (
+                base,
+                format!(
+                    "{}{suffix}.jpg",
+                    crate::avatar::file_stem(object.id(), art_id)
+                ),
+            )
         } else {
             if art_id == 0 {
                 return None;
             }
-            (self.base_url.clone(), art_id, "")
+            (self.base_url.clone(), format!("{art_id:05}{suffix}.jpg"))
         };
-        url.path_segments_mut()
-            .ok()?
-            .pop_if_empty()
-            .push(&format!("{art_id:05}{fallback}{suffix}.jpg"));
+        url.path_segments_mut().ok()?.pop_if_empty().push(&filename);
         Some(url)
     }
-}
-
-/// Parse a nonnegative art ID without interpreting malformed text as a fallback.
-fn artwork_id(value: &str) -> Option<u64> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    value.parse().ok().filter(|id| *id <= i32::MAX as u64)
 }
 
 /// Append a configured relative artwork directory while preserving root URL queries.

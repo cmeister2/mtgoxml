@@ -9,7 +9,7 @@ use super::{CatalogId, Error, ResolvedObject, ResolvedValue};
 /// With the `serde` feature, colors serialize as `W`, `U`, `B`, `R`, and `G`.
 /// Colorless objects use an empty color list rather than an additional color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Color {
     /// White, represented by `W`.
     #[cfg_attr(feature = "serde", serde(rename = "W"))]
@@ -48,7 +48,7 @@ impl Color {
 /// `basic_land` and `play_aid`. Unfamiliar source rarities remain in
 /// [`FriendlyObject::mtgo`] rather than being assigned a known rarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Rarity {
     /// A basic land.
@@ -134,6 +134,32 @@ impl serde::Serialize for FriendlyValue {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for FriendlyValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Wire values supported by the friendly dataset format.
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            /// Original text remains text.
+            Text(String),
+            /// Only true represents a presence flag.
+            Flag(bool),
+            /// Nested groups retain their source field names.
+            Fields(BTreeMap<String, FriendlyValue>),
+        }
+        match Input::deserialize(deserializer)? {
+            Input::Text(value) => Ok(Self::Text(value)),
+            Input::Flag(true) => Ok(Self::Flag),
+            Input::Flag(false) => Err(serde::de::Error::custom("a presence flag must be true")),
+            Input::Fields(value) => Ok(Self::Fields(value)),
+        }
+    }
+}
+
 /// A readable, owned view of a resolved card, token, product, or other object.
 ///
 /// Only explicitly recognized fields are promoted to friendly names. A field
@@ -144,7 +170,7 @@ impl serde::Serialize for FriendlyValue {
 /// Printed statistics, engine identifiers, and nested groups stay in `mtgo`;
 /// this projection does not infer additional aliases from source-name suffixes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FriendlyObject {
     /// The digital-object catalog ID, including distinct foil and nonfoil objects.
     pub id: CatalogId,

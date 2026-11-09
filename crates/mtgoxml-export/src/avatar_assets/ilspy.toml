@@ -1,0 +1,6 @@
+# Native Linux extractor, versioned independently of the captured MTGO client.
+version = "11.2.0.10050"
+url = "https://api.nuget.org/v3-flatcontainer/ilspycmd.linux-x64/11.2.0.10050/ilspycmd.linux-x64.11.2.0.10050.nupkg"
+package_sha256 = "5be3af86839e93075d103e5b4fec73a637b8d70e49c97eaf043ebe55b7c7800d"
+executable_sha256 = "09acd895eb8717bc2c7fd3dc9ede2823c1059ed1d5512513cd1512924972b1d3"
+executable_path = "tools/any/linux-x64/ilspycmd"

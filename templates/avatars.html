@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>MTGO animated avatars</title>
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    .avatar-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.5rem; padding: 0; list-style: none; }
+    .avatar-grid figure { max-width: none; }
+    .avatar-grid img { width: 256px; height: auto; }
+    .avatar-grid h2 { font-size: 1rem; margin: .4rem 0; }
+    .avatar-grid p { margin: .3rem 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MTGO animated avatars</h1>
+    <p>MTGO {{ application_version }} · {{ rendered_count }} rendered · {{ missing_count }} unavailable · {{ unsupported_count }} unsupported</p>
+    <nav><a href="../">Card browser</a> · <a href="index.json">JSON manifest</a></nav>
+    <ul class="avatar-grid">
+    {% for avatar in avatars %}
+      {% set name = avatar.name if avatar.name is string else "Avatar " ~ avatar.id %}
+      <li>
+        <figure>
+          {% if avatar.status == "rendered" %}
+          <a href="{{ avatar.url }}"><img src="{{ avatar.url }}" alt="{{ name }}" width="256" height="210" loading="lazy" decoding="async"></a>
+          {% endif %}
+          <figcaption>
+            <h2>{{ name }}</h2>
+            <p>Catalog ID {{ avatar.id }}</p>
+            {% if avatar.status == "missing" %}
+            <p>Source texture unavailable</p>
+            {% elif avatar.status == "unsupported" %}
+            <p>Unsupported animation</p>
+            {% endif %}
+          </figcaption>
+        </figure>
+      </li>
+    {% endfor %}
+    </ul>
+  </main>
+</body>
+</html>

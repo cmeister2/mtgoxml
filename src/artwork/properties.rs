@@ -11,12 +11,12 @@ pub(super) fn boolean(object: &ResolvedObject<'_>, name: &str) -> Option<bool> {
 
 /// Read a signed client integer without treating malformed text as a default.
 pub(super) fn integer(object: &ResolvedObject<'_>, name: &str, default: i32) -> Option<i32> {
-    match object.field_ref(name) {
-        None => Some(default),
-        Some(ResolvedValue::Flag) => Some(1),
-        Some(ResolvedValue::Text(value)) => value.trim().parse().ok(),
-        Some(ResolvedValue::Fields(_)) => None,
-    }
+    crate::avatar::integer(
+        object
+            .field_ref(name)
+            .map(crate::avatar::Field::from_resolved),
+        default,
+    )
 }
 
 /// Whether an effective string is empty, with the client's missing-string default.

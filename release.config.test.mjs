@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import config from "./release.config.js";
 
@@ -54,42 +54,128 @@ test("the actual semantic-release generator renders the configured preset", asyn
   }
 });
 
-test("the Cargo plugin prepares manifest and lockfile versions without publishing", async () => {
+test("the Cargo plugin prepares a public crate and preserves its private workspace member", async () => {
   const require = createRequire(import.meta.url);
   const pluginName = "@semantic-release-cargo/semantic-release-cargo";
   assert.ok(config.plugins.includes(pluginName));
+  const lockRepairName = "./scripts/prepare-workspace-lock.cjs";
+  assert.equal(config.plugins[config.plugins.indexOf(pluginName) + 1], lockRepairName);
   const pluginUrl = pathToFileURL(require.resolve(pluginName)).href;
+  const lockRepairUrl = pathToFileURL(require.resolve(lockRepairName)).href;
   const directory = await mkdtemp(join(tmpdir(), "mtgoxml-release-"));
   try {
-    await mkdir(join(directory, "src"));
-    await writeFile(join(directory, "src", "lib.rs"), "//! Release preparation fixture.\n");
+    const cargo = (...arguments_) => {
+      const result = spawnSync("cargo", arguments_, {
+        cwd: directory,
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      assert.equal(result.status, 0, result.stderr || result.error?.message);
+      return result.stdout;
+    };
+    const exporter = join(directory, "crates", "mtgoxml-export");
+    await mkdir(join(directory, "src"), { recursive: true });
+    await mkdir(join(exporter, "src"), { recursive: true });
+    await writeFile(join(directory, "src", "lib.rs"),
+      "//! Public release preparation fixture.\n/// Value consumed by the private exporter.\npub fn marker() -> u8 { 1 }\n");
+    await writeFile(join(exporter, "src", "main.rs"),
+      "//! Private workspace exporter fixture.\nfn main() { let _ = mtgoxml_release_fixture::marker(); }\n");
     await writeFile(
       join(directory, "Cargo.toml"),
-      '[package]\nname = "mtgoxml-release-fixture"\nversion = "0.0.0"\nedition = "2024"\n',
+      `[workspace]
+members = [".", "crates/mtgoxml-export"]
+default-members = [".", "crates/mtgoxml-export"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
+[package]
+name = "mtgoxml-release-fixture"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Public crate release preparation fixture"
+repository = "https://github.com/cmeister2/mtgoxml"
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock"]
+
+[lints]
+workspace = true
+`,
     );
     await writeFile(
-      join(directory, "Cargo.lock"),
-      'version = 4\n\n[[package]]\nname = "mtgoxml-release-fixture"\nversion = "0.0.0"\n',
+      join(exporter, "Cargo.toml"),
+      `[package]
+name = "mtgoxml-export-release-fixture"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+mtgoxml-release-fixture = { path = "../.." }
+`,
     );
+    cargo("generate-lockfile", "--offline");
     const result = spawnSync(
       process.execPath,
       [
         "--input-type=module",
         "--eval",
-        `import plugin from ${JSON.stringify(pluginUrl)};
-         await plugin.prepare({}, {
-           nextRelease: { version: "1.2.3" },
-           logger: { info() {}, warn() {}, error() {} },
-         });`,
+        `for (const url of ${JSON.stringify([pluginUrl, lockRepairUrl])}) {
+           const { default: plugin } = await import(url);
+           await plugin.prepare({}, {
+             cwd: process.cwd(),
+             nextRelease: { version: "1.2.3" },
+             logger: { info() {}, warn() {}, error() {} },
+           });
+         }`,
       ],
-      { cwd: directory, encoding: "utf8" },
+      { cwd: directory, encoding: "utf8", timeout: 60_000 },
     );
     assert.equal(result.status, 0, result.stderr || result.error?.message);
     const manifest = await readFile(join(directory, "Cargo.toml"), "utf8");
+    const privateManifest = await readFile(join(exporter, "Cargo.toml"), "utf8");
     const lock = await readFile(join(directory, "Cargo.lock"), "utf8");
     assert.match(manifest, /^version = "1\.2\.3"$/m);
     assert.match(lock, /name = "mtgoxml-release-fixture"\nversion = "1\.2\.3"/);
-    assert.doesNotMatch(manifest + lock, /version = "0\.0\.0"/);
+    assert.match(privateManifest, /^publish = false$/m);
+    assert.match(manifest, /^rust-version = "1\.85"$/m);
+    assert.match(manifest, /^missing_docs = "deny"$/m);
+    assert.match(privateManifest, /^workspace = true$/m);
+
+    const metadata = JSON.parse(cargo("metadata", "--locked", "--offline", "--no-deps", "--format-version=1"));
+    assert.equal(metadata.workspace_members.length, 2);
+    const publicCrate = metadata.packages.find((item) => item.name === "mtgoxml-release-fixture");
+    const privateCrate = metadata.packages.find((item) => item.name === "mtgoxml-export-release-fixture");
+    assert.equal(publicCrate.version, "1.2.3");
+    assert.equal(publicCrate.rust_version, "1.85");
+    assert.equal(privateCrate.rust_version, "1.85");
+    assert.equal(publicCrate.publish, null);
+    assert.deepEqual(privateCrate.publish, []);
+    assert.equal(privateCrate.dependencies[0].name, publicCrate.name);
+    assert.equal(privateCrate.dependencies[0].path, dirname(publicCrate.manifest_path));
+    cargo("check", "--locked", "--offline", "--workspace", "--all-targets");
+    for (const item of [publicCrate, privateCrate]) {
+      assert.match(lock, new RegExp(`name = "${item.name}"\\nversion = "${item.version.replaceAll(".", "\\.")}"`));
+    }
+    // Exercise Cargo's actual package verification, without publishing.
+    cargo("package", "--locked", "--offline", "--allow-dirty", "-p", publicCrate.name);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

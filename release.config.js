@@ -10,6 +10,7 @@ module.exports = {
       { preset: "conventionalcommits" },
     ],
     "@semantic-release-cargo/semantic-release-cargo",
+    "./scripts/prepare-workspace-lock.cjs",
     [
       "@semantic-release/github",
       { successComment: false, failComment: false, releasedLabels: false },

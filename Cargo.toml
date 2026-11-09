@@ -1,3 +1,21 @@
+[workspace]
+members = [".", "crates/mtgoxml-export"]
+default-members = [".", "crates/mtgoxml-export"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
 [package]
 name = "mtgoxml"
 version = "0.0.0"
@@ -9,34 +27,24 @@ repository = "https://github.com/cmeister2/mtgoxml"
 readme = "README.md"
 keywords = ["mtgo", "magic", "clickonce", "manifest", "xml"]
 categories = ["games", "web-programming::http-client"]
-include = ["/src/**", "/web/*.html", "/web/*.js", "/web/*.css", "/examples/**", "/tests/**", "/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
+include = ["/src/**", "/web/*.js", "/web/*.css", "/examples/**", "/tests/**", "/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/Cargo.toml", "/Cargo.lock"]
 
 [package.metadata.docs.rs]
 all-features = true
 
-[lints.rust]
-missing_docs = "deny"
-
-[lints.clippy]
-missing_docs_in_private_items = "deny"
-missing_errors_doc = "deny"
-missing_panics_doc = "deny"
+[lints]
+workspace = true
 
 [features]
 default = []
 http = ["dep:ureq"]
 serde = ["dep:serde"]
-snapshot = ["http", "serde", "dep:serde_json", "dep:sha2", "dep:sha1", "dep:flate2"]
 
 [dependencies]
 clickonce = "0.1.0"
-flate2 = { version = "1.1.10", optional = true }
 regex = "1.13.1"
 roxmltree = "0.21.2"
 serde = { version = "1.0.229", features = ["derive"], optional = true }
-serde_json = { version = "1.0.154", optional = true }
-sha1 = { version = "0.11.0", optional = true }
-sha2 = { version = "0.11.0", optional = true }
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
 url = "2.5.8"
 
@@ -47,10 +55,6 @@ required-features = ["http"]
 [[example]]
 name = "card"
 required-features = ["http"]
-
-[[bin]]
-name = "mtgoxml-export"
-required-features = ["snapshot"]
 
 [dev-dependencies]
 serde_json = "=1.0.154"

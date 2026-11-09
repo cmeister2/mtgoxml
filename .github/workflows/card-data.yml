@@ -16,7 +16,7 @@ jobs:
   snapshot:
     name: Publish new application snapshot
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: write
@@ -26,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Build exporter
-        run: cargo build --locked --release --bin mtgoxml-export --features snapshot
+        run: cargo build --locked --release -p mtgoxml-export
       - name: Download current manifests
         id: manifest
         run: target/release/mtgoxml-export probe snapshot
@@ -39,6 +39,26 @@ jobs:
           doNotFailIfNotFound: 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache avatar shader compiler
+        if: steps.release.outputs.id == ''
+        id: shader_tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mtgoxml-shader-tools
+          key: avatar-vkd3d-2.1-ubuntu26-${{ runner.arch }}-${{ hashFiles('scripts/install-avatar-shader-tools.sh') }}
+      - name: Install avatar rendering tools
+        if: steps.release.outputs.id == ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libgl1-mesa-dri spirv-cross
+      - name: Install shader compiler build dependencies
+        if: steps.release.outputs.id == '' && steps.shader_tools.outputs.cache-hit != 'true'
+        run: >-
+          sudo apt-get install --no-install-recommends -y
+          build-essential pkg-config flex bison libjson-perl libvulkan-dev spirv-headers
+      - name: Prepare avatar shader compiler
+        if: steps.release.outputs.id == ''
+        run: bash scripts/install-avatar-shader-tools.sh "$RUNNER_TEMP/mtgoxml-shader-tools"
       - name: Download, validate, and export card data
         if: steps.release.outputs.id == ''
         run: target/release/mtgoxml-export export snapshot
@@ -56,6 +76,8 @@ jobs:
             snapshot/card-data.jsonl.gz
             snapshot/card-styles.jsonl.gz
             snapshot/digital-object-image-names.jsonl.gz
+            snapshot/animated-avatars.json
+            snapshot/animated-avatars.tar.gz
             snapshot/snapshot.json
             snapshot/MTGO.application
             snapshot/MTGO.exe.manifest

@@ -22,6 +22,8 @@ replace the repository's latest crate release. New snapshots contain:
 | `card-data.jsonl.gz` | Gzip-compressed JSON Lines, one resolved digital object per line |
 | `card-styles.jsonl.gz` | Named styles with resolved inheritance or an explicit resolution error |
 | `digital-object-image-names.jsonl.gz` | Resolved store-image filenames keyed by catalog ID |
+| `animated-avatars.json` | Pretty-printed JSON array of effect-bearing avatar definitions, render status, and WebP provenance |
+| `animated-avatars.tar.gz` | Lossless WebP previews, captured textures, client assemblies, decompiled rendering code, and provenance |
 | `snapshot.json` | Source provenance, schema version, object count, shared set metadata, and artwork configuration |
 | `MTGO.application` | Original deployment-manifest bytes |
 | `MTGO.exe.manifest` | Original application-manifest bytes |
@@ -30,10 +32,11 @@ replace the repository's latest crate release. New snapshots contain:
 | `DigitalObjectImageNames.xml` | Original ordered rules used for store-image filenames |
 | `SHA256SUMS` | SHA-256 checksums for the other assets |
 
-The exporter pins the downloaded manifests before fetching components. It checks
+The exporter captures the current deployment and application manifests once per
+run and uses those same manifests throughout the export. It checks
 declared resource sizes and supported content digests for components, artwork
-configuration, and both auxiliary XML files, parses the components,
-and resolves every object before producing the export. Failed downloads,
+configuration, auxiliary XML files, and avatar-rendering assemblies, parses the
+components, and resolves every object before producing the export. Failed downloads,
 integrity checks, parsing, or resolution prevent publication. The workflow uses
 `softprops/action-gh-release` to stage assets in a draft and publish after every
 upload completes. An interrupted draft is retried on the next run. Published
@@ -100,6 +103,14 @@ New exports also contain an optional `client_data` object describing the auxilia
 JSONL format version, source URLs, raw XML SHA-256 digests, record counts, and
 unresolved style count. Older schema-3 snapshots remain valid without these assets.
 
+The optional `animated_avatars` object records its independent `schema_version: 1`,
+`definition_count`, `rendered_count`, `missing_count`, `unsupported_count`,
+`index_sha256`, `archive_sha256`, and `renderer_version`. Its counters cover the
+complete avatar index; the digests bind the JSON index and compressed archive to
+the snapshot.
+New exports generate both sidecars in the same `export` command before completing
+the release files. Older snapshots remain readable without this object.
+
 The format supports streaming through tools such as `jq` without reading a
 single enclosing array. For example, `gzip -dc card-data.jsonl.gz | head -n 1`
 prints the first object.
@@ -142,6 +153,68 @@ matched; `""` means the winning rule deliberately produced an empty name. These
 values remain distinct. The file contains filenames rather than image URLs;
 directory selection and availability fallback remain with the consumer.
 
+## Animated avatars schema version 1
+
+`animated-avatars.json` is an ordinary, uncompressed JSON array with one record
+per effect-bearing avatar in numeric catalog-ID order. An export without these
+avatars contains `[]`. Join records to `card-data.jsonl.gz` by `id`. The original
+card record, including `PREMIUM_EFFECT` in `mtgo` and the static `art_url`, retains
+the schema-3 format. Completion metadata and digests remain in `snapshot.json`;
+the preserved avatar archive includes the same `animated-avatars.json` file.
+
+Each index record has one of these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `rendered` | A completed WebP is available at `path` inside the archive, with its `size` and `sha256` |
+| `missing` | A required CDN texture returned HTTP 404 or 410 |
+| `unsupported` | The client's shader bindings or animation behavior use an unsupported extraction pattern |
+
+Rendered paths use `webp/<catalog-id>.webp`. The archive also preserves captured
+regular and mini textures, additional shader textures, original client DLLs,
+decompiled C#, extracted pixel-shader bytecode and shared assets, generated SPIR-V
+and GLSL, and source/digest provenance. Missing textures and
+unsupported definitions remain represented in the index and summary counts.
+Network failures other than explicit missing assets, integrity errors, rendering
+failures, and codec verification failures prevent publication.
+
+During export, `vkd3d-compiler` translates the captured Direct3D bytecode into
+SPIR-V and `spirv-cross` generates desktop GLSL. The source repository contains
+no generated client shader files. The archive retains both generated forms,
+their input and output hashes, translation commands, and tool versions and
+executable hashes. Tool failures prevent publication just like render failures.
+
+Previews use a 256 × 210 canvas sampled at 10 frames per second, with transparency
+composited onto opaque black. Lossless animated WebP preserves these rendered RGB
+pixels; the encoder's output is decoded to verify every playback interval against
+the sampled source frames. Identical frames may be coalesced while retaining their
+duration. Original captured textures retain their alpha channels.
+
+Each render records its timing. Effects that start mouse animation use a
+deterministic 12-second virtual-pointer loop. Other animation tracks use timings
+extracted from the captured client IL, with deterministic zero random phases and
+delays. One-shot tracks hold their final value and retrigger when the preview
+repeats. These are derived previews of the captured shaders. The original
+textures, code, and timing provenance support
+re-rendering independently of the preview format.
+
+The [published avatar gallery](https://cmeister2.github.io/mtgoxml/avatars/)
+serves the latest site's previews as individual WebP files. Its
+[`avatars/index.json`](https://cmeister2.github.io/mtgoxml/avatars/index.json)
+lists their content-hashed URLs, checksums, and render statuses. See
+[browser delivery](browser-delivery.md) for the URL contract. Each data release
+also retains the complete avatar index and archive so its previews remain
+available independently of later site deployments.
+
+The exporter verifies resources against this run's application manifest before
+extraction. Structured .NET metadata and IL provide the effect classes, texture
+bindings, default constants, and supported animation patterns. Shader and texture
+hashes record provenance. Unsupported behavior is preserved with an extraction
+diagnostic. Original DLLs and their digests remain in the
+archive as provenance. CDN graphics
+are mutable and have no version binding in the ClickOnce manifest, so their
+recorded SHA-256 digests describe the bytes observed during that export.
+
 ## Earlier snapshots
 
 Schema version 2 used the same JSONL filename, with records containing `id`, a
@@ -157,15 +230,33 @@ jq -c '.objects[]' card-data.json > card-data.jsonl
 
 ## Run the exporter locally
 
+Complete avatar export requires Linux x86-64, a C compiler, headless EGL/OpenGL
+3.3, vkd3d 2.1, and SPIRV-Cross. Follow the
+[avatar rendering setup](development.md#avatar-rendering) before building the
+exporter.
+
 ```sh
-cargo build --locked --release --bin mtgoxml-export --features snapshot
+cargo build --locked --release -p mtgoxml-export
 target/release/mtgoxml-export probe /tmp/mtgo-snapshot
 target/release/mtgoxml-export export /tmp/mtgo-snapshot
 gzip -dc /tmp/mtgo-snapshot/card-data.jsonl.gz > /tmp/card-data.jsonl
 ```
 
-The second command downloads manifests; the third explicitly downloads the full
-CardDataSource dataset, which exceeds 100 MiB. Local export does not publish a
-release. The executable also writes checksums and release notes for the release
+The `probe` command downloads manifests; `export` downloads the full CardDataSource
+dataset, which exceeds 100 MiB, and the avatar resources. It also downloads a
+digest-pinned native Linux x86-64 ILSpy helper for C# and resource extraction.
+The Rust exporter handles capture, rendering, and WebP encoding; it requires no
+Python or .NET runtime and does not execute MTGO. Local export does not publish a
+release. The executable writes checksums and release notes for the release
 action. The Actions workflow uses the repository's `GITHUB_TOKEN` with
 `contents: write`; no additional secret is needed.
+
+To add avatar assets to an older completed local export, use its saved manifest
+and catalog through the native attachment command:
+
+```sh
+cargo run --locked --release -p mtgoxml-export -- avatars /tmp/mtgo-snapshot
+```
+
+This updates the local export's avatar metadata and checksums. Already published
+releases retain their original assets.

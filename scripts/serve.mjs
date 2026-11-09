@@ -4,8 +4,13 @@ import { realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 
-const [directory = "_site", portText = "4173", prefixText = "/"] = process.argv.slice(2);
+const [directory = "_site", portText = "4173", prefixText = "/", indexText] = process.argv.slice(2);
 const root = await realpath(directory);
+// Browser tests use the static HTML template while assets remain restricted to web/.
+const indexFile = indexText ? await realpath(indexText) : null;
+if (indexFile && !(await stat(indexFile)).isFile()) {
+  throw new Error("The alternate index must be a regular file.");
+}
 const port = Number(portText);
 const prefix = "/" + prefixText.replace(/^\/+|\/+$/g, "");
 const basePath = prefix === "/" ? prefix : prefix + "/";
@@ -47,8 +52,9 @@ const server = createServer(async (request, response) => {
       return;
     }
     const relative = pathname.slice(basePath.length) || "index.html";
-    const filename = path.resolve(root, relative);
-    if (filename !== root && !filename.startsWith(root + path.sep)) {
+    const alternateIndex = relative === "index.html" && indexFile;
+    const filename = alternateIndex || path.resolve(root, relative);
+    if (!alternateIndex && filename !== root && !filename.startsWith(root + path.sep)) {
       response.writeHead(404);
       response.end();
       return;
@@ -56,7 +62,7 @@ const server = createServer(async (request, response) => {
 
     // Check real paths as well, so a symlink cannot expose files outside the site.
     const resolved = await realpath(filename);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    if (!alternateIndex && resolved !== root && !resolved.startsWith(root + path.sep)) {
       response.writeHead(404);
       response.end();
       return;

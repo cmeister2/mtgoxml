@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 
 use super::{Result, Snapshot, checksum_assets, digest_file, load_snapshot, read_bounded};
 
+/// Verified animated-avatar assets and their standalone public gallery.
+mod avatars;
+
 /// Version of the browser manifest, index, shard wrapper, and relationship links.
 const BROWSER_SCHEMA_VERSION: u32 = 1;
 /// Maximum size of one decompressed JSONL record, including its line ending.
@@ -25,8 +28,7 @@ const MAX_BROWSER_ID: u64 = 9_007_199_254_740_991;
 /// Unique suffixes prevent simultaneous builds from sharing a staging directory.
 static NEXT_BUILD: AtomicU64 = AtomicU64::new(0);
 /// Frontend sources are embedded so the installed executable can build a site.
-const WEB_ASSETS: [(&str, &[u8]); 7] = [
-    ("index.html", include_bytes!("../../../web/index.html")),
+const WEB_ASSETS: [(&str, &[u8]); 6] = [
     ("app.js", include_bytes!("../../../web/app.js")),
     ("styles.css", include_bytes!("../../../web/styles.css")),
     ("search.js", include_bytes!("../../../web/search.js")),
@@ -161,6 +163,25 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Render embedded HTML with escaping and report missing template fields as errors.
+fn render_template(name: &str, context: impl Serialize) -> Result<String> {
+    let mut environment = minijinja::Environment::new();
+    environment.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    environment.set_syntax(
+        minijinja::syntax::SyntaxConfig::builder()
+            .keep_trailing_newline(true)
+            .build()?,
+    );
+    environment.add_template("index.html", include_str!("../../../templates/index.html"))?;
+    environment.add_template(
+        "avatars.html",
+        include_str!("../../../templates/avatars.html"),
+    )?;
+    Ok(environment
+        .get_template(name)?
+        .render(minijinja::value::Serde(context))?)
+}
+
 /// Verify a completed export and atomically create its offline browser bundle.
 ///
 /// # Errors
@@ -173,6 +194,7 @@ pub(super) fn build(input: &Path, output: &Path) -> Result<()> {
     let (snapshot, _) = load_snapshot(input)?;
     let checksums = verify_checksums(input, &snapshot)?;
     verify_completion(&snapshot, &checksums)?;
+    avatars::build(input, &staging.path, &snapshot)?;
     let records = read_catalog(input, &snapshot)?;
     let (index, shards) = partition(records)?;
     let data_directory = staging.path.join("data");
@@ -215,6 +237,10 @@ pub(super) fn build(input: &Path, output: &Path) -> Result<()> {
         sets: &snapshot.sets,
     };
     write_json(&data_directory.join("current.json"), &manifest)?;
+    fs::write(
+        staging.path.join("index.html"),
+        render_template("index.html", &manifest)?,
+    )?;
     for (name, bytes) in WEB_ASSETS {
         // Frontend files belong to the same complete deployment as the data manifest.
         fs::write(staging.path.join(name), bytes)?;
@@ -228,7 +254,10 @@ pub(super) fn build(input: &Path, output: &Path) -> Result<()> {
 }
 
 /// Validate exactly the expected release assets without accepting arbitrary paths.
-fn verify_checksums(input: &Path, snapshot: &Snapshot) -> Result<BTreeMap<String, String>> {
+pub(super) fn verify_checksums(
+    input: &Path,
+    snapshot: &Snapshot,
+) -> Result<BTreeMap<String, String>> {
     let bytes = read_bounded(File::open(input.join("SHA256SUMS"))?)?;
     let assets: Vec<_> = checksum_assets(snapshot).collect();
     let mut expected = BTreeMap::new();
@@ -261,7 +290,10 @@ fn verify_checksums(input: &Path, snapshot: &Snapshot) -> Result<BTreeMap<String
 }
 
 /// Require metadata produced only after the source export completed successfully.
-fn verify_completion(snapshot: &Snapshot, checksums: &BTreeMap<String, String>) -> Result<()> {
+pub(super) fn verify_completion(
+    snapshot: &Snapshot,
+    checksums: &BTreeMap<String, String>,
+) -> Result<()> {
     if snapshot.object_count.is_none_or(|count| count == 0) {
         return Err("site requires a completed nonempty export".into());
     }
@@ -295,6 +327,9 @@ fn verify_completion(snapshot: &Snapshot, checksums: &BTreeMap<String, String>) 
                 return Err(format!("invalid client-data source URL for {name}").into());
             }
         }
+    }
+    if let Some(avatars) = &snapshot.animated_avatars {
+        super::verify_animated_metadata(avatars, checksums)?;
     }
     Ok(())
 }
@@ -585,6 +620,44 @@ mod tests {
             save_capture_checksums(&input, &metadata);
             (input, metadata)
         }
+
+        /// Add a complete avatar sidecar with one rendered, missing, and unsupported definition.
+        fn capture_with_avatars(&self) -> (PathBuf, Snapshot) {
+            let input = self.capture(&[record(1, "Card", "CARD", 10)]);
+            let (mut metadata, _) = load_snapshot(&input).unwrap();
+            let webp = avatar_webp();
+            write_avatar_index(
+                &input,
+                &[
+                    json!({"id":10,"name":"Avatar <&> \"test\"","status":"rendered","path":"webp/10.webp","size":webp.len(),"sha256":crate::digest_bytes(&webp).unwrap()}),
+                    json!({"id":11,"status":"missing","reason":"source texture returned 404"}),
+                    json!({"id":12,"status":"unsupported","reason":"unreviewed effect"}),
+                ],
+            );
+            // A long source name exercises the GNU extension emitted by the native exporter.
+            let source = format!("decompiled/{}/source.cs", "LongSourceName".repeat(12));
+            let index = fs::read(input.join("animated-avatars.json")).unwrap();
+            write_avatar_archive(
+                &input,
+                &[
+                    ("animated-avatars.json", &index),
+                    ("webp/10.webp", &webp),
+                    (&source, b"private source"),
+                ],
+            );
+            metadata.animated_avatars = Some(crate::AnimatedAvatarsMetadata {
+                schema_version: 1,
+                definition_count: 3,
+                rendered_count: 1,
+                missing_count: 1,
+                unsupported_count: 1,
+                index_sha256: digest_file(&input.join("animated-avatars.json")).unwrap(),
+                archive_sha256: digest_file(&input.join("animated-avatars.tar.gz")).unwrap(),
+                renderer_version: "avatar-renderer-test-1".into(),
+            });
+            save_capture_checksums(&input, &metadata);
+            (input, metadata)
+        }
     }
 
     impl Drop for TestDirectory {
@@ -620,6 +693,56 @@ mod tests {
             .unwrap();
         }
         fs::write(input.join("SHA256SUMS"), checksums).unwrap();
+    }
+
+    /// Write the ordinary pretty JSON array consumed by avatar verification and publication.
+    fn write_avatar_index(input: &Path, records: &[Value]) {
+        let mut file = File::create(input.join("animated-avatars.json")).unwrap();
+        serde_json::to_writer_pretty(&mut file, records).unwrap();
+        writeln!(file).unwrap();
+    }
+
+    /// Encode two tiny real frames so archive tests retain the published file format.
+    fn avatar_webp() -> Vec<u8> {
+        let mut encoder = webp_animation::Encoder::new((1, 1)).unwrap();
+        encoder.add_frame(&[255, 0, 0, 255], 0).unwrap();
+        encoder.add_frame(&[0, 255, 0, 255], 100).unwrap();
+        encoder.finalize(200).unwrap().to_vec()
+    }
+
+    /// Write the same GNU tar and gzip representation as the preserved native bundle.
+    fn write_avatar_archive(input: &Path, entries: &[(&str, &[u8])]) {
+        let gzip = GzBuilder::new().mtime(0).write(
+            File::create(input.join("animated-avatars.tar.gz")).unwrap(),
+            Compression::new(6),
+        );
+        let mut archive = tar::Builder::new(gzip);
+        for (path, bytes) in entries {
+            // append_data emits bounded GNU long-name metadata for preserved source paths.
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            archive.append_data(&mut header, path, *bytes).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap();
+    }
+
+    /// Construct an authenticated but unsafe archive without tar's path-writing safeguards.
+    fn write_raw_avatar_archive(input: &Path, path: &str, kind: tar::EntryType, bytes: &[u8]) {
+        let gzip = GzBuilder::new().mtime(0).write(
+            File::create(input.join("animated-avatars.tar.gz")).unwrap(),
+            Compression::new(6),
+        );
+        let mut archive = tar::Builder::new(gzip);
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(bytes.len() as u64);
+        header.set_entry_type(kind);
+        header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
+        header.set_cksum();
+        archive.append(&header, bytes).unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
     }
 
     /// Resolve a name's generated shard using the public manifest paths.
@@ -701,8 +824,12 @@ mod tests {
         for record in records {
             assert_eq!(restored[&record["id"].as_u64().unwrap()], record);
         }
-        assert!(first.join("index.html").is_file());
+        assert_eq!(
+            fs::read_to_string(first.join("index.html")).unwrap(),
+            include_str!("../../../templates/index.html")
+        );
         assert!(first.join("search-worker.js").is_file());
+        assert!(!first.join("avatars").exists());
     }
 
     /// Optional auxiliary assets are verified while card records and browser schema stay intact.
@@ -723,6 +850,324 @@ mod tests {
             output_shard(&output, &manifest, "Card")["objects"]["Card"][0],
             original
         );
+    }
+
+    /// Declared avatar sidecars verify without changing the browser's original card records.
+    #[test]
+    fn verifies_optional_animated_avatars_and_finalization() {
+        let directory = TestDirectory::new();
+        let (input, mut metadata) = directory.capture_with_avatars();
+        let index = fs::read(input.join("animated-avatars.json")).unwrap();
+        assert!(index.starts_with(b"[\n  {"));
+        assert!(index.ends_with(b"\n]\n"));
+        assert_eq!(
+            serde_json::from_slice::<Vec<Value>>(&index).unwrap().len(),
+            3
+        );
+        let avatars = metadata.animated_avatars.take().unwrap();
+        // Finalization extends an existing valid legacy release, not its old checksum contract.
+        save_capture_checksums(&input, &metadata);
+        crate::finalize_avatars(&input, avatars.clone()).unwrap();
+        let (metadata, _) = load_snapshot(&input).unwrap();
+        let checksums = verify_checksums(&input, &metadata).unwrap();
+        for name in crate::ANIMATED_AVATAR_ASSETS {
+            assert_eq!(checksums[name], digest_file(&input.join(name)).unwrap());
+        }
+        assert!(
+            fs::read_to_string(input.join("release-notes.md"))
+                .unwrap()
+                .contains("3 definitions; 1 rendered, 1 missing textures, 1 unsupported effects")
+        );
+        let output = directory.path.join("site");
+        build(&input, &output).unwrap();
+        let manifest = json_file(&output.join("data/current.json"));
+        assert_eq!(
+            output_shard(&output, &manifest, "Card")["objects"]["Card"][0],
+            record(1, "Card", "CARD", 10)
+        );
+        let public = json_file(&output.join("avatars/index.json"));
+        assert_eq!(public["schema_version"], 1);
+        assert_eq!(
+            public["application_version"],
+            metadata.source.application_version
+        );
+        assert_eq!(public["tag"], metadata.tag);
+        assert_eq!(public["definition_count"], 3);
+        assert_eq!(public["rendered_count"], 1);
+        assert_eq!(public["missing_count"], 1);
+        assert_eq!(public["unsupported_count"], 1);
+        let rows = public["avatars"].as_array().unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["rendered", "missing", "unsupported"]
+        );
+        let webp = avatar_webp();
+        let relative = format!("assets/{}.webp", crate::digest_bytes(&webp).unwrap());
+        assert_eq!(rows[0]["url"], relative);
+        assert_eq!(
+            fs::read(output.join("avatars").join(relative)).unwrap(),
+            webp
+        );
+        assert!(rows[1].get("url").is_none());
+        assert_eq!(
+            fs::read_dir(output.join("avatars/assets")).unwrap().count(),
+            1
+        );
+        assert!(!output.join("avatars/webp").exists());
+        assert!(!output.join("avatars/decompiled").exists());
+        let gallery = fs::read_to_string(output.join("avatars/index.html")).unwrap();
+        assert!(gallery.contains("Avatar &lt;&amp;&gt; &quot;test&quot;"));
+        assert!(gallery.contains("loading=\"lazy\""));
+        assert!(gallery.contains("Source texture unavailable"));
+        assert!(gallery.contains("Unsupported animation"));
+        assert!(
+            crate::finalize_avatars(&input, avatars)
+                .unwrap_err()
+                .to_string()
+                .contains("already finalized")
+        );
+    }
+
+    /// Rehashed archives still cannot publish missing, duplicate, unsafe, or corrupt content.
+    #[test]
+    fn rejects_unsafe_or_incoherent_avatar_archives_before_publication() {
+        for variant in [
+            "missing",
+            "duplicate",
+            "unindexed",
+            "size",
+            "digest",
+            "traversal",
+            "absolute",
+            "separator",
+            "symlink",
+            "hardlink",
+            "long name",
+            "gzip trailer",
+        ] {
+            // Refresh outer evidence to exercise extraction rather than checksum rejection.
+            let directory = TestDirectory::new();
+            let (input, mut metadata) = directory.capture_with_avatars();
+            let webp = avatar_webp();
+            match variant {
+                "missing" => write_avatar_archive(&input, &[]),
+                "duplicate" => write_avatar_archive(
+                    &input,
+                    &[("webp/10.webp", &webp), ("webp/10.webp", &webp)],
+                ),
+                "unindexed" => write_avatar_archive(
+                    &input,
+                    &[("webp/10.webp", &webp), ("webp/99.webp", &webp)],
+                ),
+                "size" => write_avatar_archive(&input, &[("webp/10.webp", b"short")]),
+                "digest" => {
+                    let mut corrupt = webp.clone();
+                    corrupt[20] ^= 1;
+                    write_avatar_archive(&input, &[("webp/10.webp", &corrupt)]);
+                }
+                "traversal" => write_raw_avatar_archive(
+                    &input,
+                    "../escape.webp",
+                    tar::EntryType::Regular,
+                    &webp,
+                ),
+                "absolute" => {
+                    write_raw_avatar_archive(&input, "/escape.webp", tar::EntryType::Regular, &webp)
+                }
+                "separator" => write_raw_avatar_archive(
+                    &input,
+                    "webp\\10.webp",
+                    tar::EntryType::Regular,
+                    &webp,
+                ),
+                "symlink" => {
+                    write_raw_avatar_archive(&input, "webp/10.webp", tar::EntryType::Symlink, &[])
+                }
+                "hardlink" => {
+                    write_raw_avatar_archive(&input, "webp/10.webp", tar::EntryType::Link, &[])
+                }
+                "long name" => write_raw_avatar_archive(
+                    &input,
+                    "././@LongLink",
+                    tar::EntryType::GNULongName,
+                    &[b'a'; 4097],
+                ),
+                _ => {
+                    let path = input.join("animated-avatars.tar.gz");
+                    let mut bytes = fs::read(&path).unwrap();
+                    let trailer = bytes.len() - 8;
+                    bytes[trailer] ^= 1;
+                    fs::write(path, bytes).unwrap();
+                }
+            }
+            metadata.animated_avatars.as_mut().unwrap().archive_sha256 =
+                digest_file(&input.join("animated-avatars.tar.gz")).unwrap();
+            save_capture_checksums(&input, &metadata);
+            let output = directory.path.join("site");
+            assert!(build(&input, &output).is_err(), "{variant}");
+            assert!(!output.exists(), "{variant}");
+            assert!(!directory.path.join("escape.webp").exists());
+        }
+    }
+
+    /// Both avatar assets and their exact checksum entries remain mandatory when declared.
+    #[test]
+    fn rejects_corrupt_missing_or_unlisted_avatar_assets() {
+        for name in crate::ANIMATED_AVATAR_ASSETS {
+            for variant in ["corrupted", "missing file", "missing checksum"] {
+                let directory = TestDirectory::new();
+                let (input, _) = directory.capture_with_avatars();
+                match variant {
+                    "corrupted" => fs::write(input.join(name), b"changed asset").unwrap(),
+                    "missing file" => fs::remove_file(input.join(name)).unwrap(),
+                    _ => {
+                        // Retain every other checksum while omitting this required sidecar.
+                        let listing = fs::read_to_string(input.join("SHA256SUMS")).unwrap();
+                        let omitted = format!("  {name}");
+                        let mut updated = String::new();
+                        for line in listing.lines().filter(|line| !line.ends_with(&omitted)) {
+                            writeln!(updated, "{line}").unwrap();
+                        }
+                        fs::write(input.join("SHA256SUMS"), updated).unwrap();
+                    }
+                }
+                let output = directory.path.join("site");
+                assert!(build(&input, &output).is_err(), "{name}: {variant}");
+                assert!(!output.exists());
+            }
+        }
+        let directory = TestDirectory::new();
+        let (input, mut metadata) = directory.capture_with_avatars();
+        metadata.animated_avatars = None;
+        save_metadata(&input, &metadata).unwrap();
+        assert!(
+            verify_checksums(&input, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid SHA256SUMS entry")
+        );
+    }
+
+    /// Fresh hashes do not repair incorrect avatar provenance, counters, paths, or JSON syntax.
+    #[test]
+    fn rejects_incoherent_animated_avatar_metadata_and_records() {
+        for variant in [
+            "schema",
+            "sum",
+            "overflow",
+            "index digest",
+            "archive digest",
+            "renderer",
+            "count",
+            "status",
+            "duplicate",
+            "render path",
+            "render size",
+            "render digest",
+            "malformed JSON",
+            "trailing JSON",
+            "concatenated arrays",
+            "non-array JSON",
+            "empty JSON",
+        ] {
+            let directory = TestDirectory::new();
+            let (input, mut metadata) = directory.capture_with_avatars();
+            let avatars = metadata.animated_avatars.as_mut().unwrap();
+            match variant {
+                "schema" => avatars.schema_version = 2,
+                "sum" => avatars.definition_count += 1,
+                "overflow" => avatars.rendered_count = usize::MAX,
+                "index digest" => avatars.index_sha256 = "0".repeat(64),
+                "archive digest" => avatars.archive_sha256 = "0".repeat(64),
+                "renderer" => avatars.renderer_version = " ".into(),
+                "count" => {
+                    avatars.definition_count += 1;
+                    avatars.missing_count += 1;
+                }
+                "malformed JSON"
+                | "trailing JSON"
+                | "concatenated arrays"
+                | "non-array JSON"
+                | "empty JSON" => {
+                    // Refresh both hashes so the whole-document parser must reject these bytes.
+                    let path = input.join("animated-avatars.json");
+                    let mut bytes = fs::read(&path).unwrap();
+                    match variant {
+                        "malformed JSON" => {
+                            bytes.truncate(bytes.len() - 2);
+                        }
+                        "trailing JSON" => bytes.extend_from_slice(b"unexpected trailing data"),
+                        "concatenated arrays" => bytes.extend_from_slice(b"[]"),
+                        "non-array JSON" => bytes = br#"{"id":10,"status":"missing"}"#.to_vec(),
+                        _ => bytes.clear(),
+                    }
+                    fs::write(path, bytes).unwrap();
+                    avatars.index_sha256 =
+                        digest_file(&input.join("animated-avatars.json")).unwrap();
+                }
+                _ => {
+                    let mut rendered = json!({"id":10,"status":"rendered","path":"webp/10.webp","size":4,"sha256":"a".repeat(64)});
+                    match variant {
+                        "status" => rendered["status"] = json!("unknown"),
+                        "duplicate" => {
+                            rendered["id"] = json!(11);
+                            rendered["path"] = json!("webp/11.webp");
+                        }
+                        "render path" => rendered["path"] = json!("../10.webp"),
+                        "render size" => rendered["size"] = json!(0),
+                        _ => rendered["sha256"] = json!("invalid"),
+                    }
+                    write_avatar_index(
+                        &input,
+                        &[
+                            rendered,
+                            json!({"id":11,"status":"missing"}),
+                            json!({"id":12,"status":"unsupported"}),
+                        ],
+                    );
+                    avatars.index_sha256 =
+                        digest_file(&input.join("animated-avatars.json")).unwrap();
+                }
+            }
+            save_capture_checksums(&input, &metadata);
+            let output = directory.path.join("site");
+            assert!(build(&input, &output).is_err(), "{variant}");
+            assert!(!output.exists());
+        }
+    }
+
+    /// Failed finalization preserves existing completion metadata and original checksums.
+    #[test]
+    fn avatar_finalization_rejects_corruption_without_changing_completion() {
+        for variant in ["original asset", "metadata", "empty archive"] {
+            let directory = TestDirectory::new();
+            let (input, mut metadata) = directory.capture_with_avatars();
+            let mut avatars = metadata.animated_avatars.take().unwrap();
+            save_capture_checksums(&input, &metadata);
+            let saved = fs::read(input.join("snapshot.json")).unwrap();
+            let checksums = fs::read(input.join("SHA256SUMS")).unwrap();
+            match variant {
+                "original asset" => fs::write(
+                    input.join("card-data.jsonl.gz"),
+                    b"corrupted original export",
+                )
+                .unwrap(),
+                "metadata" => avatars.definition_count += 1,
+                _ => {
+                    fs::write(input.join("animated-avatars.tar.gz"), []).unwrap();
+                    avatars.archive_sha256 =
+                        digest_file(&input.join("animated-avatars.tar.gz")).unwrap();
+                }
+            }
+            assert!(
+                crate::finalize_avatars(&input, avatars).is_err(),
+                "{variant}"
+            );
+            assert_eq!(fs::read(input.join("snapshot.json")).unwrap(), saved);
+            assert_eq!(fs::read(input.join("SHA256SUMS")).unwrap(), checksums);
+        }
     }
 
     /// Every declared auxiliary asset and checksum entry is required before publication.
