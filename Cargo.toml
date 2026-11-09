@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "crates/mtgoxml-export"]
-default-members = [".", "crates/mtgoxml-export"]
+default-members = ["."]
 resolver = "3"
 
 [workspace.package]

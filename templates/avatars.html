@@ -25,7 +25,7 @@
       <li>
         <figure>
           {% if avatar.status == "rendered" %}
-          <a href="{{ avatar.url }}"><img src="{{ avatar.url }}" alt="{{ name }}" width="256" height="210" loading="lazy" decoding="async"></a>
+          <a href="{{ avatar.preview.url }}"><img src="{{ avatar.preview.url }}" alt="{{ name }}" width="256" height="210" loading="lazy" decoding="async"></a>
           {% endif %}
           <figcaption>
             <h2>{{ name }}</h2>

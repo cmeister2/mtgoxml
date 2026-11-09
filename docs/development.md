@@ -87,7 +87,10 @@ owns version preparation and publication. The regression exercises this sequence
 against a workspace fixture, including its private exporter and locked packaging.
 
 The checked-in library version stays `0.0.0`; semantic-release injects release
-versions. The exporter has `publish = false` and is not published to crates.io.
+versions. The workspace defaults to the public library, so Cargo's release
+commands select it alone. The exporter has `publish = false` and is not published
+to crates.io. Use `--workspace` to check both packages or `-p mtgoxml-export` to
+build the exporter explicitly.
 Tags use plain SemVer. The initial `0.0.0` tag is a history baseline,
 so the first `feat:` after it selects `0.1.0`. Include that tag when pushing the
 branch.

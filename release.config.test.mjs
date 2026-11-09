@@ -62,6 +62,9 @@ test("the Cargo plugin prepares a public crate and preserves its private workspa
   assert.equal(config.plugins[config.plugins.indexOf(pluginName) + 1], lockRepairName);
   const pluginUrl = pathToFileURL(require.resolve(pluginName)).href;
   const lockRepairUrl = pathToFileURL(require.resolve(lockRepairName)).href;
+  const workspace = (await readFile(new URL("./Cargo.toml", import.meta.url), "utf8"))
+    .match(/^\[workspace\]\r?\n[\s\S]*?(?=^\[)/m)?.[0];
+  assert.ok(workspace, "the fixture must use the repository's workspace selection");
   const directory = await mkdtemp(join(tmpdir(), "mtgoxml-release-"));
   try {
     const cargo = (...arguments_) => {
@@ -82,12 +85,7 @@ test("the Cargo plugin prepares a public crate and preserves its private workspa
       "//! Private workspace exporter fixture.\nfn main() { let _ = mtgoxml_release_fixture::marker(); }\n");
     await writeFile(
       join(directory, "Cargo.toml"),
-      `[workspace]
-members = [".", "crates/mtgoxml-export"]
-default-members = [".", "crates/mtgoxml-export"]
-resolver = "3"
-
-[workspace.package]
+      `${workspace}[workspace.package]
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -163,6 +161,7 @@ mtgoxml-release-fixture = { path = "../.." }
     assert.equal(metadata.workspace_members.length, 2);
     const publicCrate = metadata.packages.find((item) => item.name === "mtgoxml-release-fixture");
     const privateCrate = metadata.packages.find((item) => item.name === "mtgoxml-export-release-fixture");
+    assert.deepEqual(metadata.workspace_default_members, [publicCrate.id]);
     assert.equal(publicCrate.version, "1.2.3");
     assert.equal(publicCrate.rust_version, "1.85");
     assert.equal(privateCrate.rust_version, "1.85");
@@ -174,8 +173,8 @@ mtgoxml-release-fixture = { path = "../.." }
     for (const item of [publicCrate, privateCrate]) {
       assert.match(lock, new RegExp(`name = "${item.name}"\\nversion = "${item.version.replaceAll(".", "\\.")}"`));
     }
-    // Exercise Cargo's actual package verification, without publishing.
-    cargo("package", "--locked", "--offline", "--allow-dirty", "-p", publicCrate.name);
+    // Exercise the default package selection used by publishing, without publishing.
+    cargo("package", "--locked", "--offline", "--allow-dirty");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

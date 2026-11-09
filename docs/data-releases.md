@@ -199,9 +199,10 @@ textures, code, and timing provenance support
 re-rendering independently of the preview format.
 
 The [published avatar gallery](https://cmeister2.github.io/mtgoxml/avatars/)
-serves the latest site's previews as individual WebP files. Its
+serves smaller quality-90 copies of the lossless release WebPs. Its
 [`avatars/index.json`](https://cmeister2.github.io/mtgoxml/avatars/index.json)
-lists their content-hashed URLs, checksums, and render statuses. See
+retains each release row and adds a `preview` object with the website copy's
+content-hashed URL, checksum, size and encoding settings. See
 [browser delivery](browser-delivery.md) for the URL contract. Each data release
 also retains the complete avatar index and archive so its previews remain
 available independently of later site deployments.

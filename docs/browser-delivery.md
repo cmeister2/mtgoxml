@@ -6,13 +6,24 @@ Rules and flavor text display supported formatting and mana symbols using
 original record, including unmodified text and properties.
 
 The [animated avatar gallery](https://cmeister2.github.io/mtgoxml/avatars/)
-provides lossless WebP previews and a
+provides quality-90 WebP previews and a
 [JSON index](https://cmeister2.github.io/mtgoxml/avatars/index.json). Rendered
 entries point to `/mtgoxml/avatars/assets/<sha256>.webp`, so identical previews
 share one asset URL. Pages publishes the selected snapshot; it does not promise
 to retain historical avatar URLs. Versioned
 [data releases](data-releases.md#animated-avatars-schema-version-1) preserve the
 complete avatar index and source/rendering archive.
+
+The gallery index uses schema 2. Each avatar retains its release metadata,
+including the path, size and checksum of its lossless WebP. Rendered avatars
+also have a `preview` object with the website copy's `url`, `sha256`, `size`,
+frame counts and encoding settings (`lossless: false`, `quality: 90`). URLs are
+relative to the gallery index. The top-level index and archive checksums identify
+the original release files.
+
+The site build verifies the release assets before compressing them, preserving
+their canvas, playback duration and infinite looping. It writes the smaller
+copies only into the generated website; the release files remain lossless.
 
 ## Local preview
 
