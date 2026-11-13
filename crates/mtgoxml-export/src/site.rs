@@ -408,13 +408,12 @@ fn partition(records: BTreeMap<u64, Value>) -> Result<(Vec<IndexEntry>, Vec<Shar
     let mut textures = BTreeMap::new();
     for (&id, record) in &records {
         // Texture numbers occupy a separate namespace from catalog IDs.
-        if let Some(texture) = reference(record, id, "CARDTEXTURE_NUMBER")? {
-            if let Some(previous) = textures.insert(texture, id) {
-                return Err(format!(
-                    "ambiguous texture {texture}: catalog IDs {previous} and {id}"
-                )
-                .into());
-            }
+        if let Some(texture) = reference(record, id, "CARDTEXTURE_NUMBER")?
+            && let Some(previous) = textures.insert(texture, id)
+        {
+            return Err(
+                format!("ambiguous texture {texture}: catalog IDs {previous} and {id}").into(),
+            );
         }
     }
     let mut relations = BTreeMap::new();

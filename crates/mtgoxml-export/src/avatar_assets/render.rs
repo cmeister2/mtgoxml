@@ -313,7 +313,7 @@ impl Renderer {
                     return Err("avatar input texture dimensions are invalid".into());
                 }
                 let mut pixels = image.as_raw().clone();
-                for pixel in pixels.chunks_exact_mut(4) {
+                for pixel in pixels.as_chunks_mut::<4>().0 {
                     for index in 0..3 {
                         pixel[index] =
                             ((u16::from(pixel[index]) * u16::from(pixel[3]) + 127) / 255) as u8;

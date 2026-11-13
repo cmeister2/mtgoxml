@@ -69,12 +69,14 @@ pub(crate) fn compress_preview(encoded: &[u8]) -> Result<(Vec<u8>, Value)> {
         if frame.timestamp() != end as i32
             || frame.dimensions() != (width, height)
             || rgba.len() != rgb_size / 3 * 4
-            || rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+            || rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255)
         {
             return Err("avatar preview source has invalid canvas or playback data".into());
         }
         let rgb = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|pixel| pixel[..3].iter().copied())
             .collect();
         frames.push((rgb, duration));
@@ -383,7 +385,7 @@ fn verify_pixels(
         }
         let rgba = frame.data();
         if rgba.len() != width as usize * height as usize * 4
-            || rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+            || rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255)
         {
             return Err("animated WebP decoded canvas is not opaque RGBA".into());
         }
@@ -401,8 +403,10 @@ fn verify_pixels(
             let expected = &frames[source_index].0;
             exact &= rgba.len() == expected.len() / 3 * 4
                 && rgba
-                    .chunks_exact(4)
-                    .zip(expected.chunks_exact(3))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(expected.as_chunks::<3>().0)
                     .all(|(actual, rgb)| &actual[..3] == rgb);
             covered = end.min(source_end);
         }

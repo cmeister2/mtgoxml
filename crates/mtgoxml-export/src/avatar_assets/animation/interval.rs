@@ -424,15 +424,14 @@ fn validate_accessors(methods: &[Method]) -> Result<()> {
         .find(|method| method.name == ".cctor")
         .ok_or_else(|| fail("missing custom range static initialization"))?;
     for instruction in &initializer.body {
-        if let Operand::Method(reference) = &instruction.operand {
-            if reference.owner == "System.Windows.DependencyProperty"
-                && reference.name == "Register"
-                && reference.parameter_count != 3
-            {
-                return Err(fail(
-                    "custom range defaults require unsupported property metadata",
-                ));
-            }
+        if let Operand::Method(reference) = &instruction.operand
+            && reference.owner == "System.Windows.DependencyProperty"
+            && reference.name == "Register"
+            && reference.parameter_count != 3
+        {
+            return Err(fail(
+                "custom range defaults require unsupported property metadata",
+            ));
         }
     }
     Ok(())

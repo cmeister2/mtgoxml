@@ -840,52 +840,52 @@ impl<'a> Evaluator<'a> {
             }
             return Ok(Value::Null);
         }
-        if let Some(Value::Collection(builder)) = &receiver {
-            if name == "Add" {
-                // Freeze the keyframe's final easing configuration when it enters the collection.
-                let Some(Value::Frame(frame)) = arguments.first() else {
-                    return Err(unsupported(name, None, "expected scalar keyframe"));
+        if let Some(Value::Collection(builder)) = &receiver
+            && name == "Add"
+        {
+            // Freeze the keyframe's final easing configuration when it enters the collection.
+            let Some(Value::Frame(frame)) = arguments.first() else {
+                return Err(unsupported(name, None, "expected scalar keyframe"));
+            };
+            let frame = frame.borrow();
+            let mut value = frame.frame.clone();
+            if let Some(mode) = &frame.easing {
+                value.interpolation = match mode.get() {
+                    0 => Interpolation::SineIn,
+                    1 => Interpolation::SineOut,
+                    2 => Interpolation::SineInOut,
+                    _ => return Err(unsupported(name, None, "unknown easing mode")),
                 };
-                let frame = frame.borrow();
-                let mut value = frame.frame.clone();
-                if let Some(mode) = &frame.easing {
-                    value.interpolation = match mode.get() {
-                        0 => Interpolation::SineIn,
-                        1 => Interpolation::SineOut,
-                        2 => Interpolation::SineInOut,
-                        _ => return Err(unsupported(name, None, "unknown easing mode")),
-                    };
-                }
-                let mut builder = builder.borrow_mut();
-                let Curve::Keyframes(frames) = &mut builder.curve else {
-                    return Err(unsupported(
-                        name,
-                        None,
-                        "collection on non-keyframe animation",
-                    ));
-                };
-                if frames.len() >= MAX_KEYFRAMES {
-                    return Err(unsupported(name, None, "keyframe limit exceeded"));
-                }
-                frames.push(value);
-                return Ok(Value::Integer((frames.len() - 1) as i32));
             }
+            let mut builder = builder.borrow_mut();
+            let Curve::Keyframes(frames) = &mut builder.curve else {
+                return Err(unsupported(
+                    name,
+                    None,
+                    "collection on non-keyframe animation",
+                ));
+            };
+            if frames.len() >= MAX_KEYFRAMES {
+                return Err(unsupported(name, None, "keyframe limit exceeded"));
+            }
+            frames.push(value);
+            return Ok(Value::Integer((frames.len() - 1) as i32));
         }
-        if let Some(Value::Frame(frame)) = &receiver {
-            if name == "set_EasingFunction" {
-                // Retain the easing object because its mode can be assigned after construction.
-                let Some(Value::Easing(easing)) = arguments.first() else {
-                    return Err(unsupported(name, None, "unknown easing function"));
-                };
-                frame.borrow_mut().easing = Some(easing.clone());
-                return Ok(Value::Null);
-            }
+        if let Some(Value::Frame(frame)) = &receiver
+            && name == "set_EasingFunction"
+        {
+            // Retain the easing object because its mode can be assigned after construction.
+            let Some(Value::Easing(easing)) = arguments.first() else {
+                return Err(unsupported(name, None, "unknown easing function"));
+            };
+            frame.borrow_mut().easing = Some(easing.clone());
+            return Ok(Value::Null);
         }
-        if let Some(Value::Easing(easing)) = &receiver {
-            if name == "set_EasingMode" {
-                easing.set(arguments[0].number()? as i32);
-                return Ok(Value::Null);
-            }
+        if let Some(Value::Easing(easing)) = &receiver
+            && name == "set_EasingMode"
+        {
+            easing.set(arguments[0].number()? as i32);
+            return Ok(Value::Null);
         }
         if name == "BeginAnimation" && owner == "System.Windows.Media.Animation.Animatable" {
             // Resolve property resets and replacement semantics before collecting a track.
