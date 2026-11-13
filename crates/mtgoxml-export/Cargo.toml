@@ -2,7 +2,7 @@
 name = "mtgoxml-export"
 version = "0.0.0"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 license.workspace = true
 publish = false
 description = "Capture and publish verified MTGO datasets and animated avatar assets"

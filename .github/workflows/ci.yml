@@ -33,8 +33,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, macos-latest, windows-latest]
-        toolchain: ["1.85.0", stable]
+        toolchain: ["1.85.0", "1.88.0", stable]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PACKAGES: ${{ matrix.toolchain == '1.85.0' && '-p mtgoxml' || '--workspace' }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -46,14 +51,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libegl1 libgl1-mesa-dri
-      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo check --locked $CARGO_PACKAGES --all-targets --all-features
       - run: cargo test --locked -p mtgoxml --no-default-features
-      - run: cargo test --locked --workspace --all-targets --all-features
+      - run: cargo test --locked $CARGO_PACKAGES --all-targets --all-features
         env:
           MTGOXML_TEST_EGL: ${{ runner.os == 'Linux' && matrix.toolchain == 'stable' && '1' || '' }}
-      - run: cargo test --locked --workspace --doc --all-features
+      - run: cargo test --locked $CARGO_PACKAGES --doc --all-features
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked $CARGO_PACKAGES --all-targets --all-features -- -D warnings
 
   msrv:
     name: Verify declared MSRV
