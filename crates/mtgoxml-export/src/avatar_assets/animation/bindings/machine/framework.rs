@@ -136,10 +136,10 @@ impl Machine<'_> {
                 .ok_or("missing reflected assembly")?;
             return Ok(Value::Assembly(assembly.name.clone()));
         }
-        if name == "ToString" {
-            if let Some(Value::Assembly(name)) = args.first() {
-                return Ok(Value::Text(name.clone()));
-            }
+        if name == "ToString"
+            && let Some(Value::Assembly(name)) = args.first()
+        {
+            return Ok(Value::Text(name.clone()));
         }
         if owner == "System.String" {
             match name {

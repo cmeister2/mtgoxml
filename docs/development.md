@@ -1,11 +1,12 @@
 # Development
 
-MSRV: **Rust 1.85**; edition 2024.
+The minimum supported Rust version is 1.85 for the library and 1.88 for the exporter. Both packages use edition 2024.
 
 The Cargo workspace contains the public `mtgoxml` library at the repository root
 and the private `mtgoxml-export` application in `crates/mtgoxml-export`. The
 application owns dataset export, browser-site generation, and avatar rendering.
-Both packages share the workspace's Rust version and lint policy. The exporter
+Both packages share the workspace lint policy. The exporter requires Rust 1.88
+because image 0.25.10 requires that compiler version. The exporter
 depends on the library's `http` and `serde` features; its graphics and codec
 dependencies belong to the application package.
 
@@ -22,17 +23,15 @@ evenflow check . --strict
 The minimal-feature test selects only the library package so the exporter's
 dependency features cannot enable HTTP or serialization during that check.
 
-CI runs stable and the MSRV on Ubuntu 26.04, macOS, and Windows, plus separate MSRV,
-coverage, documentation, and release-tooling checks. The standalone MSRV job
-selects the public library; the Rust 1.85 matrix checks both packages.
+CI tests the library with Rust 1.85 and the complete workspace with Rust 1.88 and stable on Ubuntu 26.04, macOS, and Windows.
+Separate jobs cover minimum compiler support, coverage, documentation, and release tooling. The standalone compiler compatibility job selects the public library.
 The Evenflow GitHub Action
 must pass before release and the required `Success` check. Renovate tracks the
 pinned action and binary versions.
 
 The Ubuntu stable Rust job enables `MTGOXML_TEST_EGL=1` in the existing all-feature
 test suite. This requires the actual headless shader test to pass and feeds the
-same release and `Success` gates. Other matrix jobs still compile both workspace
-packages and run their tests without requiring a graphics runtime.
+same release and `Success` gates. Other jobs test their selected packages without a graphics runtime.
 
 Keep the Cargo Rust constraint in `renovate.json` aligned with `Cargo.toml`'s
 MSRV. Renovate uses it to filter dependency releases and select its Rust toolchain.
@@ -105,7 +104,7 @@ all-target, all-feature Cargo suite above.
 ## Avatar rendering
 
 The `mtgoxml-export` package includes native avatar capture, an EGL/OpenGL renderer,
-and a lossless animated WebP codec. Rust 1.85 remains supported. The codec builds
+and a lossless animated WebP codec. The exporter requires Rust 1.88. The codec builds
 its bundled C sources, so building the exporter requires a target C compiler:
 
 ```sh
