@@ -22,7 +22,7 @@ jobs:
         uses: cmeister2/evenflow@5be5a94940565ae9ff25f9f611f64eb536363ba5 # main
         with:
           # renovate: datasource=github-releases depName=cmeister2/evenflow
-          version: '0.3.1'
+          version: '0.3.2'
           paths: '.'
           working-directory: '.'
           strict: 'true'
