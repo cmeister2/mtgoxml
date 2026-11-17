@@ -736,7 +736,6 @@ mod tests {
     use super::*;
     use flate2::read::MultiGzDecoder;
     use serde_json::Value;
-    use std::io::{BufRead, BufReader};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Unique suffixes for temporary test directories within one process.
@@ -887,10 +886,6 @@ mod tests {
 
     /// Capture and export one verified catalog through the same path as each CLI mode.
     fn assert_export_scope(scope: ExportScope) {
-        use std::net::TcpListener;
-        use std::thread;
-        use std::time::Instant;
-
         /// Exact small payloads and independently computed base64 SHA-256 digests.
         const RESOURCES: [(&str, &str, &str); 4] = [
             (
@@ -915,9 +910,8 @@ mod tests {
             ),
         ];
         let capture = capture();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let source = format!("http://{}/MTGO.application", listener.local_addr().unwrap());
+        let mut server = mockito::Server::new();
+        let source = format!("{}/MTGO.application", server.url());
         let mut application = String::from(
             r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" manifestVersion="1.0"><assemblyIdentity name="MTGO.exe" version="1.2.3.4"/><application/>"#,
         );
@@ -941,66 +935,21 @@ mod tests {
             &snapshot(&pinned, application.as_bytes()).unwrap(),
         )
         .unwrap();
-        let server = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut requested = Vec::new();
-            while requested.len() < RESOURCES.len() && Instant::now() < deadline {
-                // Nonblocking accepts and socket deadlines also bound failed export runs.
-                let (mut stream, _) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(error) => panic!("local export server failed: {error}"),
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new((&mut stream).take(8 * 1024));
-                let mut request = String::new();
-                reader.read_line(&mut request).unwrap();
-                let target = request.split_whitespace().nth(1).unwrap().to_owned();
-                loop {
-                    // Consume the bounded request headers before returning one closed response.
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                        break;
-                    }
-                }
-                let payload = RESOURCES
-                    .iter()
-                    .find(|(name, _, _)| target == format!("/{name}"));
-                let (status, body) = payload
-                    .map_or(("404 Not Found", "unexpected request"), |(_, body, _)| {
-                        ("200 OK", *body)
-                    });
-                write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-                requested.push(target);
-            }
-            requested
-        });
-        let result = export(&capture.path, scope);
-        let requested = server.join().unwrap();
-        result.unwrap();
-        assert_eq!(
-            requested,
-            [
-                "/MTGO.exe.config",
-                "/CardDataSource/client_TEST.xml",
-                "/CardStyle.xml",
-                "/DigitalObjectImageNames.xml"
-            ]
-        );
+        let requests: Vec<_> = RESOURCES
+            .iter()
+            .map(|(name, body, _)| {
+                server
+                    .mock("GET", format!("/{name}").as_str())
+                    .with_status(200)
+                    .with_body(*body)
+                    .expect(1)
+                    .create()
+            })
+            .collect();
+        export(&capture.path, scope).unwrap();
+        for request in requests {
+            request.assert();
+        }
         let (metadata, _) = load_snapshot(&capture.path).unwrap();
         assert_eq!(metadata.object_count, Some(1));
         let checksums = site::verify_checksums(&capture.path, &metadata).unwrap();

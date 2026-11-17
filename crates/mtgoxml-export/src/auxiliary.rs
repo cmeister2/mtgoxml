@@ -494,59 +494,6 @@ mod tests {
         Ok(())
     }
 
-    /// Serve one bounded store HEAD request for the complete gzip export regression.
-    fn store_response(
-        status: u16,
-    ) -> Result<(
-        mtgoxml::ArtworkResolver,
-        std::thread::JoinHandle<std::io::Result<String>>,
-    )> {
-        use std::io::BufRead;
-        use std::net::TcpListener;
-        use std::time::{Duration, Instant};
-
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
-        let root = format!("http://{}/Graphics", listener.local_addr()?);
-        let artwork = mtgoxml::ArtworkResolver::from_config(
-            Url::parse("https://patch.example/MTGO.exe.config")?,
-            format!(r#"<configuration><downloadSource><artRoot value="{root}"/><cardArtSubPath value="Cards/Pics"/><store2ArtSubPath value="Store2"/></downloadSource></configuration>"#).as_bytes(),
-        )?;
-        let handle = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => return Err(error),
-                }
-            };
-            stream.set_nonblocking(false)?;
-            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-            stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-            let mut reader = std::io::BufReader::new((&mut stream).take(8192));
-            let mut request = String::new();
-            reader.read_line(&mut request)?;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                    break;
-                }
-            }
-            write!(
-                stream,
-                "HTTP/1.1 {status} Test\r\nContent-Type: image/png\r\nContent-Length: 234352\r\nConnection: close\r\n\r\n"
-            )?;
-            Ok(request)
-        });
-        Ok((artwork, handle))
-    }
-
     /// Ravnica and its clone share one available URL; outages preserve prior completed files.
     #[test]
     fn exports_ravnica_urls_and_preserves_outputs_on_http_failure() -> Result<()> {
@@ -561,13 +508,20 @@ mod tests {
             for name in CHECKSUM_ASSETS {
                 fs::write(capture.path.join(name), b"previous completed bytes")?;
             }
-            let (artwork, handle) = store_response(status)?;
+            let mut server = mockito::Server::new();
+            let image = server
+                .mock("HEAD", "/Graphics/Store2/ravnica_remix_booster_a.png")
+                .with_status(status)
+                .with_header("content-type", "image/png")
+                .expect(1)
+                .create();
+            let artwork = mtgoxml::ArtworkResolver::from_config(
+                Url::parse("https://patch.example/MTGO.exe.config")?,
+                format!(r#"<configuration><downloadSource><artRoot value="{}/Graphics"/><cardArtSubPath value="Cards/Pics"/><store2ArtSubPath value="Store2"/></downloadSource></configuration>"#, server.url()).as_bytes(),
+            )?;
             let mut images = StoreImages::new(&artwork, &super::super::agent());
             let result = export(&capture.path, &application, &database, &mut images, source);
-            assert_eq!(
-                handle.join().unwrap()?,
-                "HEAD /Graphics/Store2/ravnica_remix_booster_a.png HTTP/1.1\r\n"
-            );
+            image.assert();
             if status == 200 {
                 assert_eq!(result?.schema_version, 1);
                 let expected_url = format!(

@@ -28,3 +28,6 @@ toml = { version = "1.2.1", default-features = false, features = ["parse", "serd
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 webp-animation = { version = "0.10.0", default-features = false, features = ["static"] }
 zip = { version = "7.3.0", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+mockito = "1.7.2"

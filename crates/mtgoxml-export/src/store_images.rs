@@ -104,76 +104,9 @@ fn transport_url(url: &Url) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use mockito::{Matcher, Server};
     use std::net::TcpListener;
-    use std::thread::JoinHandle;
-    use std::time::{Duration, Instant};
-
-    /// One response in a bounded script, without any image body bytes.
-    struct Reply {
-        /// HTTP status, or zero to close the connection without a response.
-        status: u16,
-        /// Additional response headers, including content type or redirect location.
-        headers: &'static str,
-    }
-
-    /// Serve a finite script and retain every request line for exact assertions.
-    fn server(replies: Vec<Reply>) -> Result<(Url, JoinHandle<std::io::Result<Vec<String>>>)> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let address = listener.local_addr()?;
-        listener.set_nonblocking(true)?;
-        let handle = std::thread::spawn(move || {
-            let mut requests = Vec::new();
-            for reply in replies {
-                let mut stream = accept(&listener)?;
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    let mut byte = [0];
-                    if stream.read(&mut byte)? == 0 || request.len() > 8192 {
-                        return Err(std::io::Error::other("invalid store image request"));
-                    }
-                    request.push(byte[0]);
-                }
-                requests.push(
-                    String::from_utf8_lossy(&request)
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_owned(),
-                );
-                if reply.status != 0 {
-                    write!(
-                        stream,
-                        "HTTP/1.1 {} Test\r\n{}Content-Length: 234352\r\nConnection: close\r\n\r\n",
-                        reply.status, reply.headers
-                    )?;
-                }
-            }
-            Ok(requests)
-        });
-        Ok((Url::parse(&format!("http://{address}/Graphics"))?, handle))
-    }
-
-    /// Accept one loopback connection within five seconds on every supported platform.
-    fn accept(listener: &TcpListener) -> std::io::Result<std::net::TcpStream> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => return Err(error),
-            }
-        };
-        stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-        Ok(stream)
-    }
+    use std::time::Duration;
 
     /// Configure both store paths to expose any accidental use of the older directory.
     fn resolver(root: &Url, newer: bool) -> Result<StoreImages> {
@@ -196,25 +129,29 @@ mod tests {
     /// Exact casing, escaped filename segments, query strings, and cached hits survive HEAD.
     #[test]
     fn preserves_names_queries_and_caches_available_urls() -> Result<()> {
-        let (mut root, handle) = server(vec![Reply {
-            status: 200,
-            headers: "Content-Type: image/png\r\n",
-        }])?;
-        root.set_query(Some("token=test"));
+        let mut server = Server::new();
+        let image = server
+            .mock(
+                "HEAD",
+                "/Graphics/Store2/MTGOTHER%20folder%2Fa%3F%23.png?token=test",
+            )
+            .with_status(200)
+            .with_header("content-type", "image/png")
+            .with_header("content-length", "234352")
+            .expect(1)
+            .create();
+        let root = Url::parse(&format!("{}/Graphics?token=test", server.url()))?;
         let mut images = resolver(&root, true)?;
         let result = images.resolve(Some("MTGOTHER folder/a?#.png"))?;
         assert_eq!(images.resolve(Some("MTGOTHER folder/a?#.png"))?, result);
         assert_eq!(
             result,
             Some(format!(
-                "{}/Store2/MTGOTHER%20folder%2Fa%3F%23.png?token=test",
-                root.as_str().split('?').next().unwrap()
+                "{}/Graphics/Store2/MTGOTHER%20folder%2Fa%3F%23.png?token=test",
+                server.url()
             ))
         );
-        assert_eq!(
-            handle.join().unwrap()?,
-            ["HEAD /Graphics/Store2/MTGOTHER%20folder%2Fa%3F%23.png?token=test HTTP/1.1"]
-        );
+        image.assert();
         Ok(())
     }
 
@@ -222,17 +159,24 @@ mod tests {
     #[test]
     fn caches_not_found_and_gone_images_without_store_fallback() -> Result<()> {
         for status in [404, 410] {
-            let (root, handle) = server(vec![Reply {
-                status,
-                headers: "",
-            }])?;
+            let mut server = Server::new();
+            let image = server
+                .mock("HEAD", "/Graphics/Store2/missing.png")
+                .with_status(status)
+                .expect(1)
+                .create();
+            let old_store = server
+                .mock("HEAD", "/Graphics/Store/missing.png")
+                .with_status(200)
+                .with_header("content-type", "image/png")
+                .expect(0)
+                .create();
+            let root = Url::parse(&format!("{}/Graphics", server.url()))?;
             let mut images = resolver(&root, true)?;
             assert_eq!(images.resolve(Some("missing.png"))?, None);
             assert_eq!(images.resolve(Some("missing.png"))?, None);
-            assert_eq!(
-                handle.join().unwrap()?,
-                ["HEAD /Graphics/Store2/missing.png HTTP/1.1"]
-            );
+            image.assert();
+            old_store.assert();
         }
         Ok(())
     }
@@ -240,91 +184,98 @@ mod tests {
     /// The generated URL identifies the image response after HTTP redirects.
     #[test]
     fn returns_final_image_url_after_redirects() -> Result<()> {
-        let (root, handle) = server(vec![
-            Reply {
-                status: 302,
-                headers: "Location: /final/actual.PNG\r\n",
-            },
-            Reply {
-                status: 200,
-                headers: "Content-Type: Image/PNG; charset=binary\r\n",
-            },
-        ])?;
+        let mut server = Server::new();
+        let redirect = server
+            .mock("HEAD", "/Graphics/Store2/redirect.png")
+            .with_status(302)
+            .with_header("location", "/final/actual.PNG")
+            .expect(1)
+            .create();
+        let image = server
+            .mock("HEAD", "/final/actual.PNG")
+            .with_status(200)
+            .with_header("content-type", "Image/PNG; charset=binary")
+            .expect(1)
+            .create();
+        let root = Url::parse(&format!("{}/Graphics", server.url()))?;
         let mut images = resolver(&root, true)?;
         assert_eq!(
             images.resolve(Some("redirect.png"))?,
-            Some(root.join("/final/actual.PNG")?.to_string())
+            Some(format!("{}/final/actual.PNG", server.url()))
         );
-        assert_eq!(
-            handle.join().unwrap()?,
-            [
-                "HEAD /Graphics/Store2/redirect.png HTTP/1.1",
-                "HEAD /final/actual.PNG HTTP/1.1"
-            ]
-        );
+        redirect.assert();
+        image.assert();
         Ok(())
     }
 
     /// Unexpected statuses and invalid content types fail without caching or fallback.
     #[test]
     fn errors_remain_errors_and_can_be_retried() -> Result<()> {
-        for (status, headers) in [
-            (503, ""),
-            (403, ""),
-            (429, ""),
-            (204, "Content-Type: image/png\r\n"),
-            (205, "Content-Type: image/png\r\n"),
-            (200, "Content-Type: text/html\r\n"),
-            (200, "Content-Type: image/\r\n"),
-            (200, ""),
+        for (status, content_type) in [
+            (503, None),
+            (403, None),
+            (429, None),
+            (204, Some("image/png")),
+            (205, Some("image/png")),
+            (200, Some("text/html")),
+            (200, Some("image/")),
+            (200, None),
         ] {
-            let (root, handle) = server(vec![
-                Reply { status, headers },
-                Reply {
-                    status: 200,
-                    headers: "Content-Type: image/png\r\n",
-                },
-            ])?;
+            let mut server = Server::new();
+            let failure = server
+                .mock("HEAD", "/Graphics/Store2/retry.png")
+                .with_status(status)
+                .expect(1);
+            let failure = if let Some(value) = content_type {
+                failure.with_header("content-type", value)
+            } else {
+                failure
+            }
+            .create();
+            let root = Url::parse(&format!("{}/Graphics", server.url()))?;
             let mut images = resolver(&root, true)?;
             assert!(images.resolve(Some("retry.png")).is_err());
+            assert!(!images.cache.contains_key("retry.png"));
+            failure.assert();
+            failure.remove();
+            let image = server
+                .mock("HEAD", "/Graphics/Store2/retry.png")
+                .with_status(200)
+                .with_header("content-type", "image/png")
+                .expect(1)
+                .create();
             assert!(images.resolve(Some("retry.png"))?.is_some());
-            assert_eq!(
-                handle.join().unwrap()?,
-                [
-                    "HEAD /Graphics/Store2/retry.png HTTP/1.1",
-                    "HEAD /Graphics/Store2/retry.png HTTP/1.1"
-                ]
-            );
+            image.assert();
         }
         Ok(())
     }
 
-    /// A closed connection stops resolution and leaves the filename absent from the cache.
+    /// A refused connection stops resolution and leaves the filename absent from the cache.
     #[test]
     fn network_failure_does_not_become_a_missing_image() -> Result<()> {
-        let (root, handle) = server(vec![Reply {
-            status: 0,
-            headers: "",
-        }])?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        drop(listener);
+        let root = Url::parse(&format!("http://{address}/Graphics"))?;
         let mut images = resolver(&root, true)?;
-        assert!(images.resolve(Some("disconnect.png")).is_err());
+        let error = images.resolve(Some("disconnect.png")).unwrap_err();
+        assert!(error.downcast_ref::<ureq::Error>().is_some(), "{error}");
         assert!(!images.cache.contains_key("disconnect.png"));
-        assert_eq!(
-            handle.join().unwrap()?,
-            ["HEAD /Graphics/Store2/disconnect.png HTTP/1.1"]
-        );
         Ok(())
     }
 
     /// Empty names and absent Store2 configuration never contact the available Store path.
     #[test]
     fn skips_empty_names_and_missing_directories() -> Result<()> {
-        let root = Url::parse("http://127.0.0.1:1/Graphics")?;
+        let mut server = Server::new();
+        let unused = server.mock("HEAD", Matcher::Any).expect(0).create();
+        let root = Url::parse(&format!("{}/Graphics", server.url()))?;
         let mut images = resolver(&root, true)?;
         assert_eq!(images.resolve(None)?, None);
         assert_eq!(images.resolve(Some(""))?, None);
         let mut images = resolver(&root, false)?;
         assert_eq!(images.resolve(Some("unused.png"))?, None);
+        unused.assert();
         Ok(())
     }
 
