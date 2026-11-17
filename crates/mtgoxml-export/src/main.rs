@@ -17,12 +17,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
+use self::progress::Progress;
+
 /// Verified style and product-image projections released alongside the card catalog.
 mod auxiliary;
 /// Captured avatar sources and native lossless animated WebP generation.
 mod avatar_assets;
+/// Stderr progress bars and periodic plain-text updates for CI logs.
+mod progress;
 /// Offline browser-bundle generation from a completed data release.
 mod site;
+/// Available store artwork URLs resolved from the captured client configuration.
+mod store_images;
 
 /// Version of the published JSON representation.
 const SCHEMA_VERSION: u32 = 3;
@@ -42,6 +48,15 @@ const CHECKSUM_ASSETS: [&str; 5] = [
 const ANIMATED_AVATAR_ASSETS: [&str; 2] = ["animated-avatars.json", "animated-avatars.tar.gz"];
 /// Errors from networking, parsing, verification, serialization, or file writes.
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Select the data-only CI export or the complete release with avatar assets.
+#[derive(Clone, Copy)]
+enum ExportScope {
+    /// Export the JSON Lines datasets and their source and completion metadata.
+    JsonLines,
+    /// Also capture and render avatar assets for a complete release.
+    WithAvatars,
+}
 
 /// Provenance captured before any component downloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,21 +132,34 @@ struct Snapshot {
 
 /// Dispatch manifest discovery, data export, or an offline browser build.
 fn main() -> Result<()> {
+    progress::init_logging()?;
+    if let Err(error) = run() {
+        log::error!("{error}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Parse arguments and run the selected export operation.
+fn run() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     let command = arguments
         .next()
-        .ok_or("expected probe, export, avatars, or site")?;
+        .ok_or("expected probe, export, export-jsonl, avatars, or site")?;
     let directory = PathBuf::from(arguments.next().ok_or("expected output directory")?);
     let source = arguments.next();
     if arguments.next().is_some() {
         return Err(
-            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR | mtgoxml-export avatars DIR | mtgoxml-export site SNAPSHOT_DIR OUTPUT_DIR".into(),
+            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR | mtgoxml-export export-jsonl DIR | mtgoxml-export avatars DIR | mtgoxml-export site SNAPSHOT_DIR OUTPUT_DIR".into(),
         );
     }
     match command.as_str() {
         "probe" => probe(&directory, source.as_deref().unwrap_or(LIVE_DEPLOYMENT_URL)),
-        "export" if source.is_none() => export(&directory),
-        "export" => Err("export accepts only the captured snapshot directory".into()),
+        "export" if source.is_none() => export(&directory, ExportScope::WithAvatars),
+        "export-jsonl" if source.is_none() => export(&directory, ExportScope::JsonLines),
+        "export" | "export-jsonl" => {
+            Err("export commands accept only the captured snapshot directory".into())
+        }
         "avatars" if source.is_none() => export_avatars(&directory),
         "avatars" => Err("avatars accepts only the completed snapshot directory".into()),
         "site" => site::build(
@@ -142,21 +170,32 @@ fn main() -> Result<()> {
                     .ok_or("site requires an output directory")?,
             ),
         ),
-        _ => Err("expected probe, export, avatars, or site".into()),
+        _ => Err("expected probe, export, export-jsonl, avatars, or site".into()),
     }
 }
 
 /// Fetch both manifests once, validate their relationship, and save their exact bytes.
 fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
     let agent = agent();
+    let mut progress = Progress::new("Downloading manifests", 2);
+    progress.set_message("MTGO.application");
     let (deployment_url, deployment_bytes) = fetch(&agent, &Url::parse(deployment_url)?)?;
     let deployment = Deployment::from_bytes(deployment_url.as_str(), &deployment_bytes)?;
+    progress.advance();
+    progress.set_message("MTGO.exe.manifest");
     let (application_url, application_bytes) =
         fetch(&agent, deployment.application_manifest_url())?;
     verify_application(&deployment, &application_bytes)?;
     let application =
         deployment.with_application(application_url, Manifest::from_bytes(&application_bytes)?)?;
     let snapshot = snapshot(&application, &application_bytes)?;
+    progress.advance();
+    progress.finish();
+    log::info!(
+        "Captured MTGO {}: {} resources",
+        snapshot.source.application_version,
+        application.resources().len()
+    );
 
     // Persist the verified source before publishing metadata that refers to it.
     fs::create_dir_all(directory)?;
@@ -171,7 +210,8 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
 }
 
 /// Download the pinned components and publish the local gzip only after full validation.
-fn export(directory: &Path) -> Result<()> {
+fn export(directory: &Path, scope: ExportScope) -> Result<()> {
+    log::info!("Preparing export in {}", directory.display());
     for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"]
         .into_iter()
         .chain(auxiliary::CHECKSUM_ASSETS)
@@ -194,15 +234,19 @@ fn export(directory: &Path) -> Result<()> {
     snapshot.animated_avatars = None;
     save_metadata(directory, &snapshot)?;
     let (mut snapshot, application) = load_snapshot(directory)?;
+    log::info!("Exporting MTGO {}", snapshot.source.application_version);
     let agent = agent();
     let (artwork, config_bytes, artwork_source) = load_artwork(&application, &agent)?;
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
     let sets = database.set_metadata()?;
-    let client_data = auxiliary::export(directory, &application, &database, |resource| {
-        fetch(&agent, &resource.url)
-    })?;
-    let avatars = avatar_assets::collect_definitions(&database)?;
-
+    let mut store_images = store_images::StoreImages::new(&artwork, &agent);
+    let client_data = auxiliary::export(
+        directory,
+        &application,
+        &database,
+        &mut store_images,
+        |resource| fetch(&agent, &resource.url),
+    )?;
     // An interrupted export leaves only a temporary gzip, never a completed asset.
     let temporary = directory.join("card-data.jsonl.gz.tmp");
     write_database(File::create(&temporary)?, &database, &artwork)?;
@@ -212,15 +256,24 @@ fn export(directory: &Path) -> Result<()> {
     snapshot.sets = sets;
     snapshot.artwork = Some(artwork_source);
     snapshot.client_data = Some(client_data);
-    snapshot.animated_avatars = Some(avatar_assets::generate(
-        directory,
-        &application,
-        &snapshot,
-        &avatars,
-        &artwork,
-    )?);
+    if matches!(scope, ExportScope::WithAvatars) {
+        let avatars = avatar_assets::collect_definitions(&database)?;
+        snapshot.animated_avatars = Some(avatar_assets::generate(
+            directory,
+            &application,
+            &snapshot,
+            &avatars,
+            &artwork,
+        )?);
+    }
+    log::info!("Writing snapshot metadata and checksums");
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
+    log::info!(
+        "Export complete: {} objects in {}",
+        database.len(),
+        directory.display()
+    );
     println!("Exported {} objects", database.len());
     Ok(())
 }
@@ -265,6 +318,7 @@ fn agent() -> ureq::Agent {
 /// Download raw bytes while retaining the final URL and enforcing HTTP status and size.
 fn fetch(agent: &ureq::Agent, url: &Url) -> Result<(Url, Vec<u8>)> {
     check_url(url)?;
+    log::debug!("GET {url}");
     let mut response = agent.get(url.as_str()).call()?;
     if !response.status().is_success() {
         return Err(format!("HTTP {} for {url}", response.status()).into());
@@ -272,6 +326,7 @@ fn fetch(agent: &ureq::Agent, url: &Url) -> Result<(Url, Vec<u8>)> {
     let final_url = Url::parse(&response.get_uri().to_string())?;
     check_url(&final_url)?;
     let bytes = read_bounded(response.body_mut().as_reader())?;
+    log::debug!("Downloaded {final_url}: {} bytes", bytes.len());
     Ok((final_url, bytes))
 }
 
@@ -389,21 +444,31 @@ fn load_database(
     mut read: impl FnMut(&mtgoxml::Resource) -> Result<Vec<u8>>,
 ) -> Result<CardDatabase> {
     let mut database = application.card_database();
-    for resource in application
+    let resources: Vec<_> = application
         .card_data_resources()
         .filter(|resource| resource.is_card_data_component())
-    {
+        .collect();
+    let mut progress = Progress::new("Downloading card data", resources.len());
+    for resource in resources {
         // Verify bytes before interpreting XML or accepting a source identity.
+        progress.set_message(&resource.path);
         let bytes = read(resource)?;
         verify_bytes(&resource.path, &bytes, resource.size, &resource.hashes)?;
         let file = CardDataFile::from_bytes(&bytes)?;
         file.validate_resource(resource)?;
         database.insert(application, file)?;
+        progress.advance();
     }
+    progress.finish();
     if database.is_empty() {
         return Err("snapshot contains no digital objects".into());
     }
+    log::info!(
+        "Resolving references for {} catalog objects",
+        database.len()
+    );
     database.validate()?;
+    log::info!("Resolved {} catalog objects", database.len());
     Ok(database)
 }
 
@@ -416,6 +481,7 @@ fn load_artwork(
         .resource("MTGO.exe.config")
         .filter(|resource| resource.kind == ResourceKind::File)
         .ok_or("application has no MTGO.exe.config resource")?;
+    log::info!("Downloading artwork configuration: {}", resource.path);
     let (url, bytes) = fetch(agent, &resource.url)?;
     verify_bytes(&resource.path, &bytes, resource.size, &resource.hashes)?;
     let artwork = ArtworkResolver::from_config(url.clone(), &bytes)?;
@@ -437,15 +503,19 @@ fn write_database(
         .mtime(0)
         .operating_system(255)
         .write(writer, Compression::new(6));
+    let mut progress = Progress::new("Writing card-data.jsonl.gz", database.len());
     for object in database.objects() {
         // Resolve and serialize one object at a time in stable numeric ID order.
         let object = object?;
+        progress.set_message(object.name().unwrap_or("(unnamed object)"));
         let mut friendly = object.friendly()?;
         friendly.art_url = artwork.for_object(&object).map(|url| url.to_string());
         serde_json::to_writer(&mut gzip, &friendly)?;
         writeln!(gzip)?;
+        progress.advance();
     }
     gzip.finish()?.flush()?;
+    progress.finish();
     Ok(())
 }
 
@@ -716,7 +786,6 @@ mod tests {
     use super::*;
     use flate2::read::MultiGzDecoder;
     use serde_json::Value;
-    use std::io::{BufRead, BufReader};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Unique suffixes for temporary test directories within one process.
@@ -843,7 +912,7 @@ mod tests {
         }
         // Source corruption stops the retry before it can request any network resources.
         fs::write(capture.path.join("MTGO.exe.manifest"), b"invalid manifest").unwrap();
-        assert!(export(&capture.path).is_err());
+        assert!(export(&capture.path, ExportScope::WithAvatars).is_err());
         let saved: Snapshot =
             serde_json::from_slice(&fs::read(capture.path.join("snapshot.json")).unwrap()).unwrap();
         assert!(saved.animated_avatars.is_none());
@@ -856,10 +925,17 @@ mod tests {
     /// The default export completes both avatar sidecars even when the catalog has no avatars.
     #[test]
     fn default_export_generates_zero_definition_avatar_sidecars() {
-        use std::net::TcpListener;
-        use std::thread;
-        use std::time::Instant;
+        assert_export_scope(ExportScope::WithAvatars);
+    }
 
+    /// Data-only exports complete all JSONL files without avatar metadata or sidecars.
+    #[test]
+    fn jsonl_export_omits_avatar_sidecars() {
+        assert_export_scope(ExportScope::JsonLines);
+    }
+
+    /// Capture and export one verified catalog through the same path as each CLI mode.
+    fn assert_export_scope(scope: ExportScope) {
         /// Exact small payloads and independently computed base64 SHA-256 digests.
         const RESOURCES: [(&str, &str, &str); 4] = [
             (
@@ -884,9 +960,8 @@ mod tests {
             ),
         ];
         let capture = capture();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let source = format!("http://{}/MTGO.application", listener.local_addr().unwrap());
+        let mut server = mockito::Server::new();
+        let source = format!("{}/MTGO.application", server.url());
         let mut application = String::from(
             r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" manifestVersion="1.0"><assemblyIdentity name="MTGO.exe" version="1.2.3.4"/><application/>"#,
         );
@@ -910,68 +985,35 @@ mod tests {
             &snapshot(&pinned, application.as_bytes()).unwrap(),
         )
         .unwrap();
-        let server = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut requested = Vec::new();
-            while requested.len() < RESOURCES.len() && Instant::now() < deadline {
-                // Nonblocking accepts and socket deadlines also bound failed export runs.
-                let (mut stream, _) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(error) => panic!("local export server failed: {error}"),
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new((&mut stream).take(8 * 1024));
-                let mut request = String::new();
-                reader.read_line(&mut request).unwrap();
-                let target = request.split_whitespace().nth(1).unwrap().to_owned();
-                loop {
-                    // Consume the bounded request headers before returning one closed response.
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                        break;
-                    }
-                }
-                let payload = RESOURCES
-                    .iter()
-                    .find(|(name, _, _)| target == format!("/{name}"));
-                let (status, body) = payload
-                    .map_or(("404 Not Found", "unexpected request"), |(_, body, _)| {
-                        ("200 OK", *body)
-                    });
-                write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-                requested.push(target);
-            }
-            requested
-        });
-        let result = export(&capture.path);
-        let requested = server.join().unwrap();
-        result.unwrap();
-        assert_eq!(
-            requested,
-            [
-                "/MTGO.exe.config",
-                "/CardDataSource/client_TEST.xml",
-                "/CardStyle.xml",
-                "/DigitalObjectImageNames.xml"
-            ]
-        );
+        let requests: Vec<_> = RESOURCES
+            .iter()
+            .map(|(name, body, _)| {
+                server
+                    .mock("GET", format!("/{name}").as_str())
+                    .with_status(200)
+                    .with_body(*body)
+                    .expect(1)
+                    .create()
+            })
+            .collect();
+        export(&capture.path, scope).unwrap();
+        for request in requests {
+            request.assert();
+        }
         let (metadata, _) = load_snapshot(&capture.path).unwrap();
         assert_eq!(metadata.object_count, Some(1));
+        let checksums = site::verify_checksums(&capture.path, &metadata).unwrap();
+        site::verify_completion(&metadata, &checksums).unwrap();
+        if matches!(scope, ExportScope::JsonLines) {
+            assert!(metadata.animated_avatars.is_none());
+            assert_eq!(metadata.client_data.as_ref().unwrap().schema_version, 1);
+            for name in ANIMATED_AVATAR_ASSETS {
+                assert!(!capture.path.join(name).exists());
+                assert!(!checksums.contains_key(name));
+            }
+            site::build(&capture.path, &capture.path.join("site")).unwrap();
+            return;
+        }
         let avatars = metadata.animated_avatars.as_ref().unwrap();
         assert_eq!(
             (
@@ -982,8 +1024,6 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        let checksums = site::verify_checksums(&capture.path, &metadata).unwrap();
-        site::verify_completion(&metadata, &checksums).unwrap();
         for name in ANIMATED_AVATAR_ASSETS {
             assert_eq!(
                 checksums[name],
@@ -1213,7 +1253,9 @@ mod tests {
             assert!(checksums.lines().any(|line| line == expected));
         }
         let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
-        assert!(notes.contains("2 card styles (1 unresolved); 2 store-image records"));
+        assert!(notes.contains(
+            "Client data JSON Lines schema 1: 2 card styles (1 unresolved); 2 store-image records"
+        ));
     }
 
     /// Checksums cover all published source and data assets, including completed metadata.

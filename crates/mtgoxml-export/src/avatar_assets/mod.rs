@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use texture::Texture;
 use ureq::ResponseExt;
 
+use super::progress::Progress;
 use super::{AnimatedAvatarsMetadata, Result, Snapshot, digest_bytes, digest_file, verify_bytes};
 
 /// Structured managed metadata, bindings, and preview animation extraction.
@@ -111,6 +112,10 @@ impl Drop for Staging {
 
 /// Build avatar definitions directly from resolved objects during a normal export.
 pub(super) fn collect_definitions(database: &CardDatabase) -> Result<Vec<Definition>> {
+    log::info!(
+        "Collecting avatar definitions from {} objects",
+        database.len()
+    );
     let mut avatars = Vec::new();
     for object in database.objects() {
         // Read MTGO fields through the library before allocating export-specific metadata.
@@ -122,11 +127,13 @@ pub(super) fn collect_definitions(database: &CardDatabase) -> Result<Vec<Definit
             return Err("avatar definition limit exceeded".into());
         }
     }
+    log::info!("Collected {} avatar definitions", avatars.len());
     Ok(avatars)
 }
 
 /// Adapt a saved friendly dataset to the same avatar metadata used by a normal export.
 pub(super) fn definitions(directory: &Path, snapshot: &Snapshot) -> Result<Vec<Definition>> {
+    log::info!("Loading avatar definitions from card-data.jsonl.gz");
     let mut reader = BufReader::new(MultiGzDecoder::new(File::open(
         directory.join("card-data.jsonl.gz"),
     )?));
@@ -164,6 +171,10 @@ pub(super) fn definitions(directory: &Path, snapshot: &Snapshot) -> Result<Vec<D
         return Err("avatar source object count mismatch".into());
     }
     avatars.sort_by_key(|avatar| avatar.id);
+    log::info!(
+        "Loaded {} avatar definitions from {count} objects",
+        avatars.len()
+    );
     Ok(avatars)
 }
 
@@ -240,18 +251,22 @@ fn decompile_sources(
         let resource = application
             .resource(name)
             .ok_or_else(|| format!("missing avatar source assembly: {name}"))?;
+        log::info!("Downloading avatar source assembly {name}");
         let (bytes, mut source) = download(agent, &resource.url)?;
         verify_bytes(name, &bytes, resource.size, &resource.hashes)?;
         fs::write(original.join(name), bytes)?;
         source["path"] = json!(format!("original/{name}"));
         source["manifest_verified"] = json!(true);
         sources.push(source);
+        log::info!("Saved avatar source assembly {name}");
     }
     for name in [
         "ShaderEffects.dll",
         "Core.dll",
         "WotC.MtGO.Client.Model.Core.dll",
     ] {
+        // Report each assembly before the external source extractor can block.
+        log::info!("Decompiling avatar source assembly {name}");
         tool.decompile(
             &original.join(name),
             &original,
@@ -259,6 +274,7 @@ fn decompile_sources(
                 .join("decompiled")
                 .join(name.trim_end_matches(".dll")),
         )?;
+        log::info!("Decompiled avatar source assembly {name}");
     }
     Ok(sources)
 }
@@ -382,10 +398,16 @@ pub(super) fn generate(
     let mut catalog = Catalog::default();
     if !avatars.is_empty() {
         // Decompile resources selected and verified against this run's manifest.
+        log::info!("Installing the avatar source extractor");
         let tool = extractor.install(&staging.path, &agent)?;
+        log::info!("Installed the avatar source extractor");
         sources = decompile_sources(directory, &bundle, application, &agent, &tool)?;
+        log::info!("Capturing textures for {} avatars", avatars.len());
         assets = texture::capture_textures(&bundle, avatars, root)?;
+        log::info!("Finished texture capture for {} paths", assets.len());
+        log::info!("Loading avatar effects from captured assemblies");
         catalog = Catalog::load(&bundle, avatars.iter().map(|avatar| avatar.premium_effect))?;
+        log::info!("Loaded avatar effects from captured assemblies");
     }
     write_json(&bundle.join("sources.json"), &sources)?;
     write_json(&bundle.join("assets.json"), &assets)?;
@@ -395,8 +417,10 @@ pub(super) fn generate(
     let mut translations = Vec::new();
     let mut rows = Vec::new();
     let mut counts = [0_usize; 3];
+    let mut progress = Progress::new("Rendering avatars", avatars.len());
     for avatar in avatars {
         // Each source definition contributes exactly one explicit completion status.
+        progress.set_message(&format!("{}: {}", avatar.id, avatar.name));
         let mut row =
             json!({"id":avatar.id,"name":avatar.name,"premium_effect":avatar.premium_effect});
         match catalog.get(avatar.premium_effect) {
@@ -451,9 +475,17 @@ pub(super) fn generate(
                 }
             }
         }
-        println!("Avatar {}: {}", avatar.id, row["status"]);
         rows.push(row);
+        progress.advance();
     }
+    progress.finish();
+    log::info!(
+        "Avatar results: {} rendered, {} missing textures, {} unsupported",
+        counts[0],
+        counts[1],
+        counts[2]
+    );
+    log::info!("Writing avatar indexes and bundle metadata");
     let index = staging.path.join(super::ANIMATED_AVATAR_ASSETS[0]);
     write_json(&index, &rows)?;
     fs::copy(&index, bundle.join(super::ANIMATED_AVATAR_ASSETS[0]))?;
@@ -465,6 +497,7 @@ pub(super) fn generate(
         &bundle.join("bundle.json"),
         &json!({"schema_version":1,"application_version":snapshot.source.application_version,"application_manifest_url":snapshot.source.application_manifest_url,"application_manifest_sha256":snapshot.source.application_manifest_sha256,"catalog_sha256":digest_file(&directory.join("card-data.jsonl.gz"))?,"renderer_version":RENDERER_VERSION,"effect_extraction":catalog.provenance(),"driver":driver,"dimensions":[WIDTH,HEIGHT],"sample_fps":1000/FRAME_MS,"encoding":{"format":"animated_webp","lossless":true,"quality":75,"method":4,"minimize_size":false,"loop_count":0},"texture_count":assets.iter().filter(|asset|asset["status"]=="captured").count(),"missing_texture_count":assets.iter().filter(|asset|asset["status"]=="missing").count(),"extractor":extractor.provenance(),"shader_translation":{"tools":compiler.as_ref().map(shaders::Compiler::provenance),"shaders":translations},"notes":["CDN graphics URLs are mutable; recorded bytes, timestamps and hashes identify the observed capture.","Native rendering is a derived preview; exact Windows MTGO equivalence has not been verified.","Unrecognized client binding or animation behavior is preserved with an extraction diagnostic."]}),
     )?;
+    log::info!("Hashing avatar bundle files");
     let mut inventory = String::new();
     for path in files(&bundle)? {
         use std::fmt::Write as _;
@@ -477,7 +510,9 @@ pub(super) fn generate(
     }
     fs::write(bundle.join("SHA256SUMS"), inventory)?;
     let archive = staging.path.join(super::ANIMATED_AVATAR_ASSETS[1]);
+    log::info!("Packing the avatar source bundle");
     write_archive(&archive, &bundle)?;
+    log::info!("Packed the avatar source bundle");
     let metadata = AnimatedAvatarsMetadata {
         schema_version: 1,
         definition_count: avatars.len(),

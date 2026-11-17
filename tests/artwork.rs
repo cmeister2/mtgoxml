@@ -65,8 +65,8 @@ fn configured(root: &str, subpath: &str) -> Result<ArtworkResolver, ArtworkError
     )
 }
 
-/// Keep the normal card directory while supplying optional avatar settings verbatim.
-fn configured_with_avatars(root: &str, settings: &str) -> Result<ArtworkResolver, ArtworkError> {
+/// Keep the normal card directory while supplying optional paths verbatim.
+fn configured_with_paths(root: &str, settings: &str) -> Result<ArtworkResolver, ArtworkError> {
     ArtworkResolver::from_config(
         Url::parse("https://patch.example/client/redirected/MTGO.exe.config").unwrap(),
         format!(r#"<configuration><downloadSource><artRoot value="{root}"/><cardArtSubPath value="Cards/Pics"/>{settings}</downloadSource></configuration>"#).as_bytes(),
@@ -210,7 +210,7 @@ fn avatar_directory_is_optional_and_resolves_relative_roots_and_queries() {
         r#"<ARTID value="23"/><IS_VANGUARD/><FRAMESTYLE value="11"/><DIGITAL_OBJECT_TYPE_CODE_STRING value="CARD"/>"#,
     );
     assert!(card_only.for_object(&database.object(1).unwrap()).is_none());
-    let resolver = configured_with_avatars(
+    let resolver = configured_with_paths(
         "../Graphics?token=test",
         r#"<avatarArtSubPath value="Avatars\Regular Portraits"/>"#,
     )
@@ -238,7 +238,43 @@ fn rejects_invalid_avatar_directories_and_qualified_values() {
         r#"<avatarArtSubPath value="https://other.example"/>"#,
     ] {
         assert!(
-            configured_with_avatars("https://art.example/Graphics", settings).is_err(),
+            configured_with_paths("https://art.example/Graphics", settings).is_err(),
+            "{settings}"
+        );
+    }
+}
+
+/// Store paths remain optional and preserve relative roots, literal segments, and queries.
+#[test]
+fn store_directories_are_optional_and_resolve_relative_roots_and_queries() {
+    let card_only = configured("https://art.example/Graphics", "Cards/Pics").unwrap();
+    assert!(card_only.store2_base_url().is_none());
+    let resolver = configured_with_paths(
+        "../Graphics?token=test",
+        r#"<store2ArtSubPath value="Store\Product Images"/>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        resolver.store2_base_url().unwrap().as_str(),
+        "https://patch.example/client/Graphics/Store/Product%20Images/?token=test"
+    );
+}
+
+/// Optional store paths reject ambiguous values and paths outside the artwork root.
+#[test]
+fn rejects_invalid_store_directories_and_qualified_values() {
+    for settings in [
+        r#"<store2ArtSubPath value="Store2"/><store2ArtSubPath value="Other"/>"#,
+        r#"<store2ArtSubPath/>"#,
+        r#"<store2ArtSubPath value=""/>"#,
+        r#"<store2ArtSubPath xmlns:other="urn:other" other:value="Store2"/>"#,
+        r#"<store2ArtSubPath value="/Store2"/>"#,
+        r#"<store2ArtSubPath value="../Store2"/>"#,
+        r#"<store2ArtSubPath value="Store2//Images"/>"#,
+        r#"<store2ArtSubPath value="https://other.example"/>"#,
+    ] {
+        assert!(
+            configured_with_paths("https://art.example/Graphics", settings).is_err(),
             "{settings}"
         );
     }

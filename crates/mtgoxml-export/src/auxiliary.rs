@@ -11,6 +11,8 @@ use mtgoxml::imagenames::DigitalObjectImageNames;
 use mtgoxml::{Application, CardDatabase, Resource, ResourceKind, Url};
 use serde::{Deserialize, Serialize};
 
+use super::progress::Progress;
+use super::store_images::StoreImages;
 use super::{Result, check_url, digest_bytes, verify_bytes};
 
 /// Additional release assets covered by the completed snapshot checksum file.
@@ -33,7 +35,7 @@ pub(super) struct Metadata {
     pub(super) schema_version: u32,
     /// Verified source of all resolved or explicitly unresolved style rows.
     pub(super) card_styles: ResourceSource,
-    /// Verified naming rules used for the store-object filename projection.
+    /// Verified naming rules used for the store-object image projection.
     pub(super) image_names: ResourceSource,
     /// Styles whose explicit clone chain has a missing base or a cycle.
     pub(super) unresolved_style_count: usize,
@@ -90,13 +92,15 @@ enum UnresolvedStyle {
     },
 }
 
-/// A store-pipeline object's generated filename, retaining empty and absent outcomes.
+/// A store-pipeline object's generated filename and available image URL.
 #[derive(Serialize)]
 struct ImageNameRow {
     /// Catalog ID of the resolved object.
     id: u64,
     /// Generated filename; an unmatched rule is null and an empty result stays empty.
     image_name: Option<String>,
+    /// Final image URL observed during export, or null when no image is available.
+    image_url: Option<String>,
 }
 
 /// Temporary outputs owned by this operation until all four assets are complete.
@@ -163,12 +167,14 @@ impl Drop for PendingOutputs {
 ///
 /// Returns an error for mismatched source identities, absent resources, failed
 /// resource verification, invalid XML, failed filename generation, or filesystem
-/// and serialization errors. Missing style ancestors and cycles are retained as
+/// and serialization errors. Store image requests fail on unexpected HTTP responses
+/// or transport errors. Missing style ancestors and cycles are retained as
 /// unresolved rows. The caller publishes completion metadata only after success.
 pub(super) fn export(
     directory: &Path,
     application: &Application,
     database: &CardDatabase,
+    store_images: &mut StoreImages,
     mut read: impl FnMut(&Resource) -> Result<(Url, Vec<u8>)>,
 ) -> Result<Metadata> {
     if database.application_url() != application.url()
@@ -176,24 +182,35 @@ pub(super) fn export(
     {
         return Err("auxiliary data and card database belong to different applications".into());
     }
+    log::info!("Downloading CardStyle.xml and DigitalObjectImageNames.xml");
     let (mut style_source, style_bytes) = load_source(application, "CardStyle.xml", &mut read)?;
     let (mut image_source, image_bytes) =
         load_source(application, "DigitalObjectImageNames.xml", &mut read)?;
     let styles = CardStyles::from_bytes(&style_bytes)?;
     let image_names = DigitalObjectImageNames::from_bytes(&image_bytes)?;
     let mut pending = PendingOutputs::new(directory);
+    log::info!(
+        "Writing card-styles.jsonl.gz: {} styles",
+        styles.styles.len()
+    );
     let unresolved_style_count = write_gzip(pending.create(CHECKSUM_ASSETS[0])?, |writer| {
         write_styles(writer, &styles)
     })?;
     style_source.record_count = styles.styles.len();
     image_source.record_count = write_gzip(pending.create(CHECKSUM_ASSETS[1])?, |writer| {
-        write_image_names(writer, database, &image_names)
+        write_image_names(writer, database, &image_names, store_images)
     })?;
     pending.create("CardStyle.xml")?.write_all(&style_bytes)?;
     pending
         .create("DigitalObjectImageNames.xml")?
         .write_all(&image_bytes)?;
     pending.publish()?;
+    log::info!(
+        "Wrote {} card styles ({} unresolved) and {} store image records",
+        style_source.record_count,
+        unresolved_style_count,
+        image_source.record_count
+    );
     Ok(Metadata {
         schema_version: 1,
         card_styles: style_source,
@@ -279,22 +296,32 @@ fn write_image_names(
     writer: &mut impl Write,
     database: &CardDatabase,
     names: &DigitalObjectImageNames,
+    store_images: &mut StoreImages,
 ) -> Result<usize> {
-    let mut count = 0;
+    let mut rows = Vec::new();
     for object in database.objects() {
         // Keep catalog order and inherited markers; an explicit zero still selects this pipeline.
         let object = object?;
         if object.field_ref("IS_DIGITALOBJECT").is_none() {
             continue;
         }
-        let row = ImageNameRow {
+        rows.push(ImageNameRow {
             id: object.id(),
             image_name: names.for_object(&object)?,
-        };
+            image_url: None,
+        });
+    }
+    let count = rows.len();
+    let mut progress = Progress::new("Resolving store images", count);
+    for mut row in rows {
+        // Resolve each image and write its row before counting the completed operation.
+        progress.set_message(row.image_name.as_deref().unwrap_or("(no image filename)"));
+        row.image_url = store_images.resolve(row.image_name.as_deref())?;
         serde_json::to_writer(&mut *writer, &row)?;
         writeln!(writer)?;
-        count += 1;
+        progress.advance();
     }
+    progress.finish();
     Ok(count)
 }
 
@@ -314,9 +341,9 @@ mod tests {
     /// Independently computed SHA-256 of the exact styles fixture bytes.
     const STYLES_DIGEST: &str = "Q0OBnBtTX2WZ+7AQD38OvwnyuLYWoQg/Rl4lFGNu1ac=";
     /// Complete small image_names source used by the captured manifest.
-    const IMAGE_NAMES: &str = r#"<DigitalObjectImageNamesData><CardSetNameReplacement Original="PHYSICAL" Replacement="CODE"/><Match Rule="Equals" MatchPattern="Ticket" ValueFormat="MTG{0}_ticket.png"/><Match Rule="Contains" MatchPattern="Unused" ValueFormat=""/></DigitalObjectImageNamesData>"#;
+    const IMAGE_NAMES: &str = r#"<DigitalObjectImageNamesData><CardSetNameReplacement Original="PHYSICAL" Replacement="CODE"/><Match Rule="Regex" MatchPattern="Ravnica Remix Booster (A|B)" ValueFormat="ravnica_remix_booster_$1.png"/><Match Rule="Equals" MatchPattern="Ticket" ValueFormat="MTG{0}_ticket.png"/><Match Rule="Contains" MatchPattern="Unused" ValueFormat=""/></DigitalObjectImageNamesData>"#;
     /// Independently computed SHA-256 of the exact image_names fixture bytes.
-    const IMAGE_NAMES_DIGEST: &str = "xlQRhmmSolgdLbJypSWZN89rKDh4A689JmCskp8aRAE=";
+    const IMAGE_NAMES_DIGEST: &str = "lVTVr2YoBjZDNqV+ubGIB340S7oLsMH0+lSqAEMs29c=";
 
     /// Process-local suffixes keep test output directories independent.
     static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(0);
@@ -378,6 +405,15 @@ mod tests {
         Ok(database)
     }
 
+    /// Keep existing XML projection fixtures independent of image availability requests.
+    fn store_images() -> StoreImages {
+        let artwork = mtgoxml::ArtworkResolver::from_config(
+            Url::parse("https://patch.example/MTGO.exe.config").unwrap(),
+            br#"<configuration><downloadSource><artRoot value="https://unused.invalid/Graphics"/><cardArtSubPath value="Cards/Pics"/></downloadSource></configuration>"#,
+        ).unwrap();
+        StoreImages::new(&artwork, &super::super::agent())
+    }
+
     /// Supply exact captured bytes while preserving a redirected source response URL.
     fn source(resource: &Resource) -> Result<(Url, Vec<u8>)> {
         let bytes = match resource.path.as_str() {
@@ -408,7 +444,13 @@ mod tests {
         let capture = Capture::new()?;
         let application = application()?;
         let database = database(&application)?;
-        let metadata = export(&capture.path, &application, &database, source)?;
+        let metadata = export(
+            &capture.path,
+            &application,
+            &database,
+            &mut store_images(),
+            source,
+        )?;
         let styles = rows(&capture.path.join(CHECKSUM_ASSETS[0]))?;
         let images = rows(&capture.path.join(CHECKSUM_ASSETS[1]))?;
         assert_eq!(
@@ -434,11 +476,11 @@ mod tests {
         assert_eq!(
             images,
             vec![
-                json!({"id":1,"image_name":"MTGCODE_ticket.png"}),
-                json!({"id":2,"image_name":"MTGCODE_ticket.png"}),
-                json!({"id":3,"image_name":""}),
-                json!({"id":5,"image_name":"MTGCODE_ticket.png"}),
-                json!({"id":7,"image_name":null})
+                json!({"id":1,"image_name":"MTGCODE_ticket.png","image_url":null}),
+                json!({"id":2,"image_name":"MTGCODE_ticket.png","image_url":null}),
+                json!({"id":3,"image_name":"","image_url":null}),
+                json!({"id":5,"image_name":"MTGCODE_ticket.png","image_url":null}),
+                json!({"id":7,"image_name":null,"image_url":null})
             ]
         );
         assert_eq!(metadata.schema_version, 1);
@@ -470,6 +512,61 @@ mod tests {
         Ok(())
     }
 
+    /// Ravnica and its clone share one available URL; outages preserve prior completed files.
+    #[test]
+    fn exports_ravnica_urls_and_preserves_outputs_on_http_failure() -> Result<()> {
+        let application = application()?;
+        let mut database = application.card_database();
+        database.insert(&application, CardDataFile::parse(r#"<CardSet id="RAVRE1">
+            <DigitalObject DigitalObjectCatalogID="DOC_71606"><CARDNAME_STRING value="Ravnica Remix Booster A"/><IS_DIGITALOBJECT/></DigitalObject>
+            <DigitalObject DigitalObjectCatalogID="DOC_71607"><CLONE_ID value="71606"/></DigitalObject>
+        </CardSet>"#)?)?;
+        for status in [200, 503] {
+            let capture = Capture::new()?;
+            for name in CHECKSUM_ASSETS {
+                fs::write(capture.path.join(name), b"previous completed bytes")?;
+            }
+            let mut server = mockito::Server::new();
+            let image = server
+                .mock("HEAD", "/Graphics/Store2/ravnica_remix_booster_a.png")
+                .with_status(status)
+                .with_header("content-type", "image/png")
+                .expect(1)
+                .create();
+            let artwork = mtgoxml::ArtworkResolver::from_config(
+                Url::parse("https://patch.example/MTGO.exe.config")?,
+                format!(r#"<configuration><downloadSource><artRoot value="{}/Graphics"/><cardArtSubPath value="Cards/Pics"/><store2ArtSubPath value="Store2"/></downloadSource></configuration>"#, server.url()).as_bytes(),
+            )?;
+            let mut images = StoreImages::new(&artwork, &super::super::agent());
+            let result = export(&capture.path, &application, &database, &mut images, source);
+            image.assert();
+            if status == 200 {
+                assert_eq!(result?.schema_version, 1);
+                let expected_url = format!(
+                    "{}ravnica_remix_booster_a.png",
+                    artwork.store2_base_url().unwrap()
+                );
+                assert_eq!(
+                    rows(&capture.path.join(CHECKSUM_ASSETS[1]))?,
+                    vec![
+                        json!({"id":71606,"image_name":"ravnica_remix_booster_a.png","image_url":expected_url}),
+                        json!({"id":71607,"image_name":"ravnica_remix_booster_a.png","image_url":expected_url})
+                    ]
+                );
+            } else {
+                assert!(result.unwrap_err().to_string().contains("503"));
+                for name in CHECKSUM_ASSETS {
+                    assert_eq!(
+                        fs::read(capture.path.join(name))?,
+                        b"previous completed bytes"
+                    );
+                }
+                assert_eq!(fs::read_dir(&capture.path)?.count(), CHECKSUM_ASSETS.len());
+            }
+        }
+        Ok(())
+    }
+
     /// Identical source and catalog snapshots produce byte-identical gzip assets.
     #[test]
     fn compressed_outputs_are_deterministic() -> Result<()> {
@@ -477,8 +574,20 @@ mod tests {
         let second = Capture::new()?;
         let application = application()?;
         let database = database(&application)?;
-        export(&first.path, &application, &database, source)?;
-        export(&second.path, &application, &database, source)?;
+        export(
+            &first.path,
+            &application,
+            &database,
+            &mut store_images(),
+            source,
+        )?;
+        export(
+            &second.path,
+            &application,
+            &database,
+            &mut store_images(),
+            source,
+        )?;
         for name in CHECKSUM_ASSETS {
             // Raw XML and compressed projections both remain reproducible.
             let bytes = fs::read(first.path.join(name))?;
@@ -503,7 +612,13 @@ mod tests {
                 b"previous pending bytes",
             )?;
         }
-        export(&capture.path, &application, &database, source)?;
+        export(
+            &capture.path,
+            &application,
+            &database,
+            &mut store_images(),
+            source,
+        )?;
         for name in CHECKSUM_ASSETS {
             assert!(capture.path.join(name).is_file());
             assert_eq!(
@@ -531,17 +646,23 @@ mod tests {
             for truncate in [false, true] {
                 // Equal-size corruption tests digest checking; truncation tests declared byte size.
                 let capture = Capture::new()?;
-                let result = export(&capture.path, &application, &database, |resource| {
-                    let (url, mut bytes) = source(resource)?;
-                    if resource.path == target {
-                        if truncate {
-                            bytes.pop();
-                        } else {
-                            bytes[0] = b'!';
+                let result = export(
+                    &capture.path,
+                    &application,
+                    &database,
+                    &mut store_images(),
+                    |resource| {
+                        let (url, mut bytes) = source(resource)?;
+                        if resource.path == target {
+                            if truncate {
+                                bytes.pop();
+                            } else {
+                                bytes[0] = b'!';
+                            }
                         }
-                    }
-                    Ok((url, bytes))
-                });
+                        Ok((url, bytes))
+                    },
+                );
                 let error = result.unwrap_err().to_string();
                 assert!(
                     error.contains(if truncate {
@@ -572,7 +693,16 @@ mod tests {
             capture.path.join(unrelated_temporary),
             b"another pending output",
         )?;
-        assert!(export(&capture.path, &application, &database, source).is_err());
+        assert!(
+            export(
+                &capture.path,
+                &application,
+                &database,
+                &mut store_images(),
+                source
+            )
+            .is_err()
+        );
         for name in CHECKSUM_ASSETS {
             assert_eq!(
                 fs::read(capture.path.join(name))?,
@@ -602,7 +732,13 @@ mod tests {
         let application = application()?;
         let mut database = application.card_database();
         database.insert(&application, CardDataFile::parse(r#"<CardSet id="TEST"><DigitalObject DigitalObjectCatalogID="DOC_2147483648"><CARDNAME_STRING value="Ticket"/></DigitalObject></CardSet>"#)?)?;
-        let metadata = export(&capture.path, &application, &database, source)?;
+        let metadata = export(
+            &capture.path,
+            &application,
+            &database,
+            &mut store_images(),
+            source,
+        )?;
         assert!(rows(&capture.path.join(CHECKSUM_ASSETS[1]))?.is_empty());
         assert_eq!(metadata.image_names.record_count, 0);
         Ok(())

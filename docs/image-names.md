@@ -9,8 +9,9 @@ code, and catalog ID, matching the client rather than a set-name property alias.
 
 These filenames belong to the client's store image pipeline; they do not replace
 card or avatar artwork selection. URL construction and image availability remain
-separate. See the Rustdoc for supported regex syntax, formatting behavior, and
-bounded parsing options.
+separate in the library. The dataset exporter adds available `image_url` values
+alongside filenames in [the generated client data](data-releases.md).
+See the Rustdoc for supported regex syntax, formatting behavior, and bounded parsing options.
 
 ```rust
 use mtgoxml::imagenames::DigitalObjectImageNames;
