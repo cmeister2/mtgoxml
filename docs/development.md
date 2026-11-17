@@ -40,6 +40,12 @@ The downloadable `mtgo-jsonl-<commit>` artifact also contains captured manifests
 GitHub retains the artifact for seven days. This job does not render avatars or publish a data release.
 The release and `Success` jobs require a successful JSONL export and artifact upload.
 
+The exporter logs stages and progress to stderr at the `info` level by default.
+In a terminal, indicatif shows progress bars. CI receives plain progress lines with counts and elapsed time about every five seconds.
+Set `RUST_LOG=debug` to include individual downloads and image requests.
+Set `RUST_LOG=warn` or `RUST_LOG=off` to reduce or disable progress output.
+The exporter reserves stdout for command results, such as the snapshot tag from `probe`.
+
 Keep the Cargo Rust constraint in `renovate.json` aligned with `Cargo.toml`'s
 MSRV. Renovate uses it to filter dependency releases and select its Rust toolchain.
 

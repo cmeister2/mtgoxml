@@ -55,6 +55,7 @@ impl StoreImages {
             .pop_if_empty()
             .push(name);
         let url = transport_url(&url)?;
+        log::debug!("HEAD {url}");
         let response = self
             .agent
             .head(url.as_str())
@@ -62,6 +63,7 @@ impl StoreImages {
             .http_status_as_error(false)
             .build()
             .call()?;
+        log::debug!("HEAD {url}: {}", response.status());
         if matches!(response.status().as_u16(), 404 | 410) {
             return Ok(None);
         }

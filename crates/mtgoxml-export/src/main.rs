@@ -17,10 +17,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ureq::ResponseExt;
 
+use self::progress::Progress;
+
 /// Verified style and product-image projections released alongside the card catalog.
 mod auxiliary;
 /// Captured avatar sources and native lossless animated WebP generation.
 mod avatar_assets;
+/// Stderr progress bars and periodic plain-text updates for CI logs.
+mod progress;
 /// Offline browser-bundle generation from a completed data release.
 mod site;
 /// Available store artwork URLs resolved from the captured client configuration.
@@ -128,6 +132,16 @@ struct Snapshot {
 
 /// Dispatch manifest discovery, data export, or an offline browser build.
 fn main() -> Result<()> {
+    progress::init_logging()?;
+    if let Err(error) = run() {
+        log::error!("{error}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Parse arguments and run the selected export operation.
+fn run() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     let command = arguments
         .next()
@@ -163,14 +177,25 @@ fn main() -> Result<()> {
 /// Fetch both manifests once, validate their relationship, and save their exact bytes.
 fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
     let agent = agent();
+    let mut progress = Progress::new("Downloading manifests", 2);
+    progress.set_message("MTGO.application");
     let (deployment_url, deployment_bytes) = fetch(&agent, &Url::parse(deployment_url)?)?;
     let deployment = Deployment::from_bytes(deployment_url.as_str(), &deployment_bytes)?;
+    progress.advance();
+    progress.set_message("MTGO.exe.manifest");
     let (application_url, application_bytes) =
         fetch(&agent, deployment.application_manifest_url())?;
     verify_application(&deployment, &application_bytes)?;
     let application =
         deployment.with_application(application_url, Manifest::from_bytes(&application_bytes)?)?;
     let snapshot = snapshot(&application, &application_bytes)?;
+    progress.advance();
+    progress.finish();
+    log::info!(
+        "Captured MTGO {}: {} resources",
+        snapshot.source.application_version,
+        application.resources().len()
+    );
 
     // Persist the verified source before publishing metadata that refers to it.
     fs::create_dir_all(directory)?;
@@ -186,6 +211,7 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
 
 /// Download the pinned components and publish the local gzip only after full validation.
 fn export(directory: &Path, scope: ExportScope) -> Result<()> {
+    log::info!("Preparing export in {}", directory.display());
     for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"]
         .into_iter()
         .chain(auxiliary::CHECKSUM_ASSETS)
@@ -208,6 +234,7 @@ fn export(directory: &Path, scope: ExportScope) -> Result<()> {
     snapshot.animated_avatars = None;
     save_metadata(directory, &snapshot)?;
     let (mut snapshot, application) = load_snapshot(directory)?;
+    log::info!("Exporting MTGO {}", snapshot.source.application_version);
     let agent = agent();
     let (artwork, config_bytes, artwork_source) = load_artwork(&application, &agent)?;
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
@@ -239,8 +266,14 @@ fn export(directory: &Path, scope: ExportScope) -> Result<()> {
             &artwork,
         )?);
     }
+    log::info!("Writing snapshot metadata and checksums");
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
+    log::info!(
+        "Export complete: {} objects in {}",
+        database.len(),
+        directory.display()
+    );
     println!("Exported {} objects", database.len());
     Ok(())
 }
@@ -285,6 +318,7 @@ fn agent() -> ureq::Agent {
 /// Download raw bytes while retaining the final URL and enforcing HTTP status and size.
 fn fetch(agent: &ureq::Agent, url: &Url) -> Result<(Url, Vec<u8>)> {
     check_url(url)?;
+    log::debug!("GET {url}");
     let mut response = agent.get(url.as_str()).call()?;
     if !response.status().is_success() {
         return Err(format!("HTTP {} for {url}", response.status()).into());
@@ -292,6 +326,7 @@ fn fetch(agent: &ureq::Agent, url: &Url) -> Result<(Url, Vec<u8>)> {
     let final_url = Url::parse(&response.get_uri().to_string())?;
     check_url(&final_url)?;
     let bytes = read_bounded(response.body_mut().as_reader())?;
+    log::debug!("Downloaded {final_url}: {} bytes", bytes.len());
     Ok((final_url, bytes))
 }
 
@@ -409,21 +444,31 @@ fn load_database(
     mut read: impl FnMut(&mtgoxml::Resource) -> Result<Vec<u8>>,
 ) -> Result<CardDatabase> {
     let mut database = application.card_database();
-    for resource in application
+    let resources: Vec<_> = application
         .card_data_resources()
         .filter(|resource| resource.is_card_data_component())
-    {
+        .collect();
+    let mut progress = Progress::new("Downloading card data", resources.len());
+    for resource in resources {
         // Verify bytes before interpreting XML or accepting a source identity.
+        progress.set_message(&resource.path);
         let bytes = read(resource)?;
         verify_bytes(&resource.path, &bytes, resource.size, &resource.hashes)?;
         let file = CardDataFile::from_bytes(&bytes)?;
         file.validate_resource(resource)?;
         database.insert(application, file)?;
+        progress.advance();
     }
+    progress.finish();
     if database.is_empty() {
         return Err("snapshot contains no digital objects".into());
     }
+    log::info!(
+        "Resolving references for {} catalog objects",
+        database.len()
+    );
     database.validate()?;
+    log::info!("Resolved {} catalog objects", database.len());
     Ok(database)
 }
 
@@ -436,6 +481,7 @@ fn load_artwork(
         .resource("MTGO.exe.config")
         .filter(|resource| resource.kind == ResourceKind::File)
         .ok_or("application has no MTGO.exe.config resource")?;
+    log::info!("Downloading artwork configuration: {}", resource.path);
     let (url, bytes) = fetch(agent, &resource.url)?;
     verify_bytes(&resource.path, &bytes, resource.size, &resource.hashes)?;
     let artwork = ArtworkResolver::from_config(url.clone(), &bytes)?;
@@ -457,15 +503,19 @@ fn write_database(
         .mtime(0)
         .operating_system(255)
         .write(writer, Compression::new(6));
+    let mut progress = Progress::new("Writing card-data.jsonl.gz", database.len());
     for object in database.objects() {
         // Resolve and serialize one object at a time in stable numeric ID order.
         let object = object?;
+        progress.set_message(object.name().unwrap_or("(unnamed object)"));
         let mut friendly = object.friendly()?;
         friendly.art_url = artwork.for_object(&object).map(|url| url.to_string());
         serde_json::to_writer(&mut gzip, &friendly)?;
         writeln!(gzip)?;
+        progress.advance();
     }
     gzip.finish()?.flush()?;
+    progress.finish();
     Ok(())
 }
 

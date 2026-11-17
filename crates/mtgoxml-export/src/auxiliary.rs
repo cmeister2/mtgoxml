@@ -11,6 +11,7 @@ use mtgoxml::imagenames::DigitalObjectImageNames;
 use mtgoxml::{Application, CardDatabase, Resource, ResourceKind, Url};
 use serde::{Deserialize, Serialize};
 
+use super::progress::Progress;
 use super::store_images::StoreImages;
 use super::{Result, check_url, digest_bytes, verify_bytes};
 
@@ -181,12 +182,17 @@ pub(super) fn export(
     {
         return Err("auxiliary data and card database belong to different applications".into());
     }
+    log::info!("Downloading CardStyle.xml and DigitalObjectImageNames.xml");
     let (mut style_source, style_bytes) = load_source(application, "CardStyle.xml", &mut read)?;
     let (mut image_source, image_bytes) =
         load_source(application, "DigitalObjectImageNames.xml", &mut read)?;
     let styles = CardStyles::from_bytes(&style_bytes)?;
     let image_names = DigitalObjectImageNames::from_bytes(&image_bytes)?;
     let mut pending = PendingOutputs::new(directory);
+    log::info!(
+        "Writing card-styles.jsonl.gz: {} styles",
+        styles.styles.len()
+    );
     let unresolved_style_count = write_gzip(pending.create(CHECKSUM_ASSETS[0])?, |writer| {
         write_styles(writer, &styles)
     })?;
@@ -199,6 +205,12 @@ pub(super) fn export(
         .create("DigitalObjectImageNames.xml")?
         .write_all(&image_bytes)?;
     pending.publish()?;
+    log::info!(
+        "Wrote {} card styles ({} unresolved) and {} store image records",
+        style_source.record_count,
+        unresolved_style_count,
+        image_source.record_count
+    );
     Ok(Metadata {
         schema_version: 1,
         card_styles: style_source,
@@ -286,24 +298,30 @@ fn write_image_names(
     names: &DigitalObjectImageNames,
     store_images: &mut StoreImages,
 ) -> Result<usize> {
-    let mut count = 0;
+    let mut rows = Vec::new();
     for object in database.objects() {
         // Keep catalog order and inherited markers; an explicit zero still selects this pipeline.
         let object = object?;
         if object.field_ref("IS_DIGITALOBJECT").is_none() {
             continue;
         }
-        let image_name = names.for_object(&object)?;
-        let image_url = store_images.resolve(image_name.as_deref())?;
-        let row = ImageNameRow {
+        rows.push(ImageNameRow {
             id: object.id(),
-            image_name,
-            image_url,
-        };
+            image_name: names.for_object(&object)?,
+            image_url: None,
+        });
+    }
+    let count = rows.len();
+    let mut progress = Progress::new("Resolving store images", count);
+    for mut row in rows {
+        // Resolve each image and write its row before counting the completed operation.
+        progress.set_message(row.image_name.as_deref().unwrap_or("(no image filename)"));
+        row.image_url = store_images.resolve(row.image_name.as_deref())?;
         serde_json::to_writer(&mut *writer, &row)?;
         writeln!(writer)?;
-        count += 1;
+        progress.advance();
     }
+    progress.finish();
     Ok(count)
 }
 
