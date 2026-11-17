@@ -86,6 +86,8 @@ pub struct ArtworkResolver {
     base_url: Url,
     /// Optional configured avatar and Vanguard artwork directory.
     avatar_base_url: Option<Url>,
+    /// Optional configured newer store artwork directory.
+    store2_base_url: Option<Url>,
 }
 
 impl ArtworkResolver {
@@ -94,6 +96,8 @@ impl ArtworkResolver {
     /// `cardArtSubPath` is required. An optional `avatarArtSubPath` enables
     /// artwork for avatars and Vanguard cards; card-only configurations remain
     /// valid when it is absent.
+    /// Optional `store2ArtSubPath` provides the store directory for callers
+    /// that resolve product images separately.
     ///
     /// Relative roots use `config_url`, which must be the final response URL
     /// after any HTTP redirects. The configured HTTP or HTTPS scheme is kept.
@@ -149,19 +153,13 @@ impl ArtworkResolver {
             required_value(source, "cardArtSubPath")?,
             "cardArtSubPath",
         )?;
-        let avatar_base_url = optional_child(source, "avatarArtSubPath")?
-            .map(|setting| {
-                artwork_directory(
-                    &root_url,
-                    setting_value(setting, "avatarArtSubPath")?,
-                    "avatarArtSubPath",
-                )
-            })
-            .transpose()?;
+        let avatar_base_url = optional_directory(source, &root_url, "avatarArtSubPath")?;
+        let store2_base_url = optional_directory(source, &root_url, "store2ArtSubPath")?;
         Ok(Self {
             art_root_url: root_url,
             base_url,
             avatar_base_url,
+            store2_base_url,
         })
     }
 
@@ -178,6 +176,11 @@ impl ArtworkResolver {
     /// The configured avatar and Vanguard directory, when supplied by the client.
     pub fn avatar_base_url(&self) -> Option<&Url> {
         self.avatar_base_url.as_ref()
+    }
+
+    /// The configured `store2ArtSubPath` directory, with a trailing slash when present.
+    pub fn store2_base_url(&self) -> Option<&Url> {
+        self.store2_base_url.as_ref()
     }
 
     /// Construct primary artwork for a card, avatar, Vanguard, or card sub-object.
@@ -231,6 +234,17 @@ impl ArtworkResolver {
         url.path_segments_mut().ok()?.pop_if_empty().push(&filename);
         Some(url)
     }
+}
+
+/// Resolve one optional artwork directory with the same rules as the required path.
+fn optional_directory(
+    source: Node<'_, '_>,
+    root: &Url,
+    name: &str,
+) -> Result<Option<Url>, ArtworkError> {
+    optional_child(source, name)?
+        .map(|setting| artwork_directory(root, setting_value(setting, name)?, name))
+        .transpose()
 }
 
 /// Append a configured relative artwork directory while preserving root URL queries.

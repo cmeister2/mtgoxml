@@ -23,6 +23,8 @@ mod auxiliary;
 mod avatar_assets;
 /// Offline browser-bundle generation from a completed data release.
 mod site;
+/// Available store artwork URLs resolved from the captured client configuration.
+mod store_images;
 
 /// Version of the published JSON representation.
 const SCHEMA_VERSION: u32 = 3;
@@ -198,9 +200,14 @@ fn export(directory: &Path) -> Result<()> {
     let (artwork, config_bytes, artwork_source) = load_artwork(&application, &agent)?;
     let database = load_database(&application, |resource| Ok(fetch(&agent, &resource.url)?.1))?;
     let sets = database.set_metadata()?;
-    let client_data = auxiliary::export(directory, &application, &database, |resource| {
-        fetch(&agent, &resource.url)
-    })?;
+    let mut store_images = store_images::StoreImages::new(&artwork, &agent);
+    let client_data = auxiliary::export(
+        directory,
+        &application,
+        &database,
+        &mut store_images,
+        |resource| fetch(&agent, &resource.url),
+    )?;
     let avatars = avatar_assets::collect_definitions(&database)?;
 
     // An interrupted export leaves only a temporary gzip, never a completed asset.
@@ -1213,7 +1220,9 @@ mod tests {
             assert!(checksums.lines().any(|line| line == expected));
         }
         let notes = fs::read_to_string(capture.path.join("release-notes.md")).unwrap();
-        assert!(notes.contains("2 card styles (1 unresolved); 2 store-image records"));
+        assert!(notes.contains(
+            "Client data JSON Lines schema 1: 2 card styles (1 unresolved); 2 store-image records"
+        ));
     }
 
     /// Checksums cover all published source and data assets, including completed metadata.

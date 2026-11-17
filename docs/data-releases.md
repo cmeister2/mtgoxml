@@ -21,7 +21,7 @@ replace the repository's latest crate release. New snapshots contain:
 | --- | --- |
 | `card-data.jsonl.gz` | Gzip-compressed JSON Lines, one resolved digital object per line |
 | `card-styles.jsonl.gz` | Named styles with resolved inheritance or an explicit resolution error |
-| `digital-object-image-names.jsonl.gz` | Resolved store-image filenames keyed by catalog ID |
+| `digital-object-image-names.jsonl.gz` | Store image filenames and available URLs keyed by catalog ID |
 | `animated-avatars.json` | Pretty-printed JSON array of effect-bearing avatar definitions, render status, and WebP provenance |
 | `animated-avatars.tar.gz` | Lossless WebP previews, captured textures, client assemblies, decompiled rendering code, and provenance |
 | `snapshot.json` | Source provenance, schema version, object count, shared set metadata, and artwork configuration |
@@ -142,7 +142,7 @@ export failures prevent publication.
 in numeric catalog-ID order:
 
 ```jsonl
-{"id":1,"image_name":"MTGOTHER_event_1_sty_001.png"}
+{"id":71606,"image_name":"ravnica_remix_booster_a.png","image_url":"https://mtgo.patch.daybreakgames.com/patch/mtg/live/Graphics/Store2/ravnica_remix_booster_a.png"}
 ```
 
 The client selects this pipeline by the presence of `IS_DIGITALOBJECT`, including
@@ -150,8 +150,23 @@ an explicit zero value. Join rows to `card-data.jsonl.gz` by `id`. Filenames use
 the object's declaring set, inherited display name, and the ordered rules in
 [DigitalObjectImageNames](image-names.md). `image_name: null` means no rule
 matched; `""` means the winning rule deliberately produced an empty name. These
-values remain distinct. The file contains filenames rather than image URLs;
-directory selection and availability fallback remain with the consumer.
+values remain distinct.
+
+`image_url` contains the final image URL from an HTTP HEAD request during export.
+The exporter uses `store2ArtSubPath` from the captured `MTGO.exe.config` and preserves the generated filename's case.
+It uses HTTPS for the official MTGO artwork host.
+Repeated filenames share one request result within an export.
+
+`image_url: null` means that the exporter finds no available image.
+This occurs for absent or empty filenames, unconfigured store directories, or HTTP 404 or 410 responses.
+Other HTTP errors and network failures stop the export.
+Responses without image content also stop the export.
+An available URL identifies the image at export time. The CDN can change afterward.
+The release contains the URLs, but it does not contain the image bytes.
+
+`image_url` is an optional addition to client data schema version 1.
+Older exports omit this field. Consumers must accept its absence and ignore unknown fields.
+Card catalog schema 3 remains unchanged.
 
 ## Animated avatars schema version 1
 
