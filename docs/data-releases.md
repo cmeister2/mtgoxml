@@ -267,6 +267,16 @@ release. The executable writes checksums and release notes for the release
 action. The Actions workflow uses the repository's `GITHUB_TOKEN` with
 `contents: write`; no additional secret is needed.
 
+To generate the three compressed JSON Lines files without avatar assets, use `export-jsonl` after `probe`:
+
+```sh
+target/release/mtgoxml-export probe /tmp/mtgo-snapshot
+target/release/mtgoxml-export export-jsonl /tmp/mtgo-snapshot
+```
+
+This command retains source manifests, configuration, auxiliary XML, completion metadata, and checksums.
+It needs no avatar rendering tools and publishes no release.
+
 To add avatar assets to an older completed local export, use its saved manifest
 and catalog through the native attachment command:
 

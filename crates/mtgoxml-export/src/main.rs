@@ -45,6 +45,15 @@ const ANIMATED_AVATAR_ASSETS: [&str; 2] = ["animated-avatars.json", "animated-av
 /// Errors from networking, parsing, verification, serialization, or file writes.
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Select the data-only CI export or the complete release with avatar assets.
+#[derive(Clone, Copy)]
+enum ExportScope {
+    /// Export the JSON Lines datasets and their source and completion metadata.
+    JsonLines,
+    /// Also capture and render avatar assets for a complete release.
+    WithAvatars,
+}
+
 /// Provenance captured before any component downloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Source {
@@ -122,18 +131,21 @@ fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     let command = arguments
         .next()
-        .ok_or("expected probe, export, avatars, or site")?;
+        .ok_or("expected probe, export, export-jsonl, avatars, or site")?;
     let directory = PathBuf::from(arguments.next().ok_or("expected output directory")?);
     let source = arguments.next();
     if arguments.next().is_some() {
         return Err(
-            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR | mtgoxml-export avatars DIR | mtgoxml-export site SNAPSHOT_DIR OUTPUT_DIR".into(),
+            "usage: mtgoxml-export probe DIR [DEPLOYMENT_URL] | mtgoxml-export export DIR | mtgoxml-export export-jsonl DIR | mtgoxml-export avatars DIR | mtgoxml-export site SNAPSHOT_DIR OUTPUT_DIR".into(),
         );
     }
     match command.as_str() {
         "probe" => probe(&directory, source.as_deref().unwrap_or(LIVE_DEPLOYMENT_URL)),
-        "export" if source.is_none() => export(&directory),
-        "export" => Err("export accepts only the captured snapshot directory".into()),
+        "export" if source.is_none() => export(&directory, ExportScope::WithAvatars),
+        "export-jsonl" if source.is_none() => export(&directory, ExportScope::JsonLines),
+        "export" | "export-jsonl" => {
+            Err("export commands accept only the captured snapshot directory".into())
+        }
         "avatars" if source.is_none() => export_avatars(&directory),
         "avatars" => Err("avatars accepts only the completed snapshot directory".into()),
         "site" => site::build(
@@ -144,7 +156,7 @@ fn main() -> Result<()> {
                     .ok_or("site requires an output directory")?,
             ),
         ),
-        _ => Err("expected probe, export, avatars, or site".into()),
+        _ => Err("expected probe, export, export-jsonl, avatars, or site".into()),
     }
 }
 
@@ -173,7 +185,7 @@ fn probe(directory: &Path, deployment_url: &str) -> Result<()> {
 }
 
 /// Download the pinned components and publish the local gzip only after full validation.
-fn export(directory: &Path) -> Result<()> {
+fn export(directory: &Path, scope: ExportScope) -> Result<()> {
     for name in ["card-data.jsonl.gz", "SHA256SUMS", "release-notes.md"]
         .into_iter()
         .chain(auxiliary::CHECKSUM_ASSETS)
@@ -208,8 +220,6 @@ fn export(directory: &Path) -> Result<()> {
         &mut store_images,
         |resource| fetch(&agent, &resource.url),
     )?;
-    let avatars = avatar_assets::collect_definitions(&database)?;
-
     // An interrupted export leaves only a temporary gzip, never a completed asset.
     let temporary = directory.join("card-data.jsonl.gz.tmp");
     write_database(File::create(&temporary)?, &database, &artwork)?;
@@ -219,13 +229,16 @@ fn export(directory: &Path) -> Result<()> {
     snapshot.sets = sets;
     snapshot.artwork = Some(artwork_source);
     snapshot.client_data = Some(client_data);
-    snapshot.animated_avatars = Some(avatar_assets::generate(
-        directory,
-        &application,
-        &snapshot,
-        &avatars,
-        &artwork,
-    )?);
+    if matches!(scope, ExportScope::WithAvatars) {
+        let avatars = avatar_assets::collect_definitions(&database)?;
+        snapshot.animated_avatars = Some(avatar_assets::generate(
+            directory,
+            &application,
+            &snapshot,
+            &avatars,
+            &artwork,
+        )?);
+    }
     save_metadata(directory, &snapshot)?;
     write_release_files(directory, &snapshot)?;
     println!("Exported {} objects", database.len());
@@ -850,7 +863,7 @@ mod tests {
         }
         // Source corruption stops the retry before it can request any network resources.
         fs::write(capture.path.join("MTGO.exe.manifest"), b"invalid manifest").unwrap();
-        assert!(export(&capture.path).is_err());
+        assert!(export(&capture.path, ExportScope::WithAvatars).is_err());
         let saved: Snapshot =
             serde_json::from_slice(&fs::read(capture.path.join("snapshot.json")).unwrap()).unwrap();
         assert!(saved.animated_avatars.is_none());
@@ -863,6 +876,17 @@ mod tests {
     /// The default export completes both avatar sidecars even when the catalog has no avatars.
     #[test]
     fn default_export_generates_zero_definition_avatar_sidecars() {
+        assert_export_scope(ExportScope::WithAvatars);
+    }
+
+    /// Data-only exports complete all JSONL files without avatar metadata or sidecars.
+    #[test]
+    fn jsonl_export_omits_avatar_sidecars() {
+        assert_export_scope(ExportScope::JsonLines);
+    }
+
+    /// Capture and export one verified catalog through the same path as each CLI mode.
+    fn assert_export_scope(scope: ExportScope) {
         use std::net::TcpListener;
         use std::thread;
         use std::time::Instant;
@@ -965,7 +989,7 @@ mod tests {
             }
             requested
         });
-        let result = export(&capture.path);
+        let result = export(&capture.path, scope);
         let requested = server.join().unwrap();
         result.unwrap();
         assert_eq!(
@@ -979,6 +1003,18 @@ mod tests {
         );
         let (metadata, _) = load_snapshot(&capture.path).unwrap();
         assert_eq!(metadata.object_count, Some(1));
+        let checksums = site::verify_checksums(&capture.path, &metadata).unwrap();
+        site::verify_completion(&metadata, &checksums).unwrap();
+        if matches!(scope, ExportScope::JsonLines) {
+            assert!(metadata.animated_avatars.is_none());
+            assert_eq!(metadata.client_data.as_ref().unwrap().schema_version, 1);
+            for name in ANIMATED_AVATAR_ASSETS {
+                assert!(!capture.path.join(name).exists());
+                assert!(!checksums.contains_key(name));
+            }
+            site::build(&capture.path, &capture.path.join("site")).unwrap();
+            return;
+        }
         let avatars = metadata.animated_avatars.as_ref().unwrap();
         assert_eq!(
             (
@@ -989,8 +1025,6 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        let checksums = site::verify_checksums(&capture.path, &metadata).unwrap();
-        site::verify_completion(&metadata, &checksums).unwrap();
         for name in ANIMATED_AVATAR_ASSETS {
             assert_eq!(
                 checksums[name],

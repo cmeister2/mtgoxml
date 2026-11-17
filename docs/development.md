@@ -34,6 +34,12 @@ test suite. This requires the actual headless shader test to pass and feeds the
 same release and `Success` gates. Other matrix jobs still compile both workspace
 packages and run their tests without requiring a graphics runtime.
 
+The `JSONL artifacts` CI job generates data for every pull request and push to `main`.
+It captures the current upstream MTGO manifests and exports three compressed JSON Lines files, including store image URLs.
+The downloadable `mtgo-jsonl-<commit>` artifact also contains captured manifests, source XML, artwork configuration, metadata, and checksums.
+GitHub retains the artifact for seven days. This job does not render avatars or publish a data release.
+The release and `Success` jobs require a successful JSONL export and artifact upload.
+
 Keep the Cargo Rust constraint in `renovate.json` aligned with `Cargo.toml`'s
 MSRV. Renovate uses it to filter dependency releases and select its Rust toolchain.
 
